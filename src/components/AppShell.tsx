@@ -12,6 +12,7 @@ const NAV = [
   { href: "/app/replies", label: "Replies", icon: ReplyIcon },
   { href: "/app/senders", label: "Senders", icon: MailIcon },
   { href: "/app/billing", label: "Billing", icon: BillingIcon },
+  { href: "/app/keys", label: "API keys", icon: KeyIcon },
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
@@ -161,6 +162,15 @@ function BillingIcon() {
     <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <rect x="3" y="6" width="18" height="13" rx="2" />
       <path d="M3 10h18M7 15h4" />
+    </svg>
+  );
+}
+
+function KeyIcon() {
+  return (
+    <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="8" cy="15" r="4" />
+      <path d="M10.85 12.15L19 4M18 7l3 3M15 10l3 3" />
     </svg>
   );
 }

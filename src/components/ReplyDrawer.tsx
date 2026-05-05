@@ -2,6 +2,15 @@
 
 import { useEffect } from "react";
 
+export type ReplyIntent =
+  | "interested"
+  | "not_now"
+  | "question"
+  | "unsubscribe"
+  | "ooo"
+  | "bounce"
+  | "other";
+
 export type ReplyItem = {
   id: string;
   from_email: string;
@@ -11,6 +20,8 @@ export type ReplyItem = {
   body_html: string | null;
   received_at: string | null;
   created_at: string;
+  intent: ReplyIntent | null;
+  intent_confidence: number | null;
   recipient: { id: string; name: string; company: string } | null;
   campaign: { id: string; name: string } | null;
 };

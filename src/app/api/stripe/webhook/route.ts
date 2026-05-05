@@ -3,6 +3,8 @@ import type Stripe from "stripe";
 import { supabaseAdmin } from "@/lib/supabase";
 import { stripe, planIdForPrice } from "@/lib/stripe";
 import type { PlanId } from "@/lib/billing";
+import { sendPaymentFailedNotice } from "@/lib/transactional";
+import { appUrl } from "@/lib/tokens";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -136,10 +138,25 @@ export async function POST(req: NextRequest) {
       if (!subId) break;
       // Flip to past_due — billing.ts ACTIVE_STATUSES still treats this as
       // entitled for one grace period before Stripe retries deplete.
-      await db
+      // Conditional on previous status='active' so the dunning email fires
+      // once per delinquency, not on every Stripe retry.
+      const { data: flipped } = await db
         .from("subscriptions")
         .update({ status: "past_due" })
-        .eq("stripe_sub_id", subId);
+        .eq("stripe_sub_id", subId)
+        .eq("status", "active")
+        .select("user_id");
+      if (flipped && flipped.length > 0) {
+        const userId = flipped[0].user_id;
+        try {
+          const { data: u } = await db.auth.admin.getUserById(userId);
+          if (u?.user?.email) {
+            await sendPaymentFailedNotice({ to: u.user.email, appUrl: appUrl() });
+          }
+        } catch {
+          // notification failure is non-fatal — webhook still 200's
+        }
+      }
       break;
     }
 

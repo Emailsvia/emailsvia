@@ -10,6 +10,7 @@ import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { warmupCapForSender } from "@/lib/warmup";
 import { assertCanSend, incrementUsage, type Plan } from "@/lib/billing";
 import { classifyError } from "@/lib/errors";
+import { markSenderRevoked } from "@/lib/sender-revoke";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,11 +19,44 @@ function unauth() {
   return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 }
 
+// Tick can run for up to ~50s (one send + bookkeeping). The lease covers a
+// generous 75s so a slow but completing run never lets a parallel tick in,
+// while a crashed run frees automatically after 75s.
+const TICK_LOCK_KEY = "emailsvia:tick";
+const TICK_LOCK_TTL_SECONDS = 75;
+
 export async function GET(req: NextRequest) {
   if (!cronBearerOk(req.headers.get("authorization"))) return unauth();
 
   const db = supabaseAdmin();
   const now = new Date();
+
+  // Only one tick at a time across the whole deployment. Without this,
+  // pg_cron + a manual /api/tick curl that overlap can both pick the same
+  // recipient (the per-row CAS catches most but not all races; this is the
+  // belt-and-suspenders).
+  const { data: gotLock, error: lockErr } = await db.rpc("try_tick_lock", {
+    lock_key: TICK_LOCK_KEY,
+    ttl_seconds: TICK_LOCK_TTL_SECONDS,
+  });
+  if (lockErr) {
+    // Lock function missing (migration 0009 not applied) — fall through so
+    // the app keeps working. Logged so we notice in dev.
+    console.warn("[tick] try_tick_lock failed, proceeding without lock:", lockErr.message);
+  } else if (gotLock !== true) {
+    return NextResponse.json({ status: "lock_held" });
+  }
+
+  try {
+    return await runTick(db, now);
+  } finally {
+    if (!lockErr) {
+      await db.rpc("release_tick_lock", { lock_key: TICK_LOCK_KEY });
+    }
+  }
+}
+
+async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise<NextResponse> {
 
   // Multi-campaign scheduler: rotate fairly across all running campaigns
   // so one long-running campaign doesn't starve the others. Pick the
@@ -522,7 +556,11 @@ export async function GET(req: NextRequest) {
     const msg = e instanceof Error ? e.message : String(e);
     const errorClass = classifyError(e);
     if (chosenSenderId && errorClass === "auth_revoked") {
-      await db.from("senders").update({ oauth_status: "revoked" }).eq("id", chosenSenderId);
+      await markSenderRevoked(db, {
+        sender_id: chosenSenderId,
+        sender_email: sender?.email ?? "",
+        user_id: campaign.user_id,
+      });
     }
     // Send to Sentry with structured tags so the dashboard can group by
     // error_class / sender / campaign without the message string carrying

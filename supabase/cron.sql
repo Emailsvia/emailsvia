@@ -50,6 +50,8 @@ select cron.unschedule('emailsvia-tick')
   where exists (select 1 from cron.job where jobname = 'emailsvia-tick');
 select cron.unschedule('emailsvia-check-replies')
   where exists (select 1 from cron.job where jobname = 'emailsvia-check-replies');
+select cron.unschedule('emailsvia-refresh-tokens')
+  where exists (select 1 from cron.job where jobname = 'emailsvia-refresh-tokens');
 
 -- Tick every minute. `params := '{}'::jsonb` is required to work around a
 -- pg_net overload bug where the internal _encode_url_with_params_array call
@@ -83,6 +85,26 @@ select cron.schedule(
         'Bearer ' || (select value from public.cron_config where key = 'cron_secret')
       ),
       timeout_milliseconds := 50000
+    );
+  $$
+);
+
+-- Proactive OAuth refresh — hourly. Walks senders whose token expires
+-- within the next 2h and rotates the access token before the tick lands
+-- on it. Catches Google's invalid_grant in a low-stakes context (no
+-- recipient on the line) and fires the "sender disconnected" email.
+select cron.schedule(
+  'emailsvia-refresh-tokens',
+  '7 * * * *',
+  $$
+    select net.http_get(
+      url := (select value from public.cron_config where key = 'app_url') || '/api/cron/refresh-tokens',
+      params := '{}'::jsonb,
+      headers := jsonb_build_object(
+        'Authorization',
+        'Bearer ' || (select value from public.cron_config where key = 'cron_secret')
+      ),
+      timeout_milliseconds := 55000
     );
   $$
 );

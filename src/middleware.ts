@@ -18,6 +18,7 @@ const PUBLIC_API_PREFIXES = [
   "/api/stripe/webhook", // Stripe POSTs without our cookies; signature-auth'd
   "/api/tick",         // cron, bearer-auth'd
   "/api/check-replies",// cron, bearer-auth'd
+  "/api/cron/",        // /api/cron/* — bearer-auth'd cron paths
   "/api/t/",           // open + click pixels (HMAC-signed URLs)
   "/api/unsubscribe",  // user-clicks-from-email (HMAC-signed)
 ];

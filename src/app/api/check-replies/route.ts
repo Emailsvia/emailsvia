@@ -6,6 +6,9 @@ import { listInboxSince } from "@/lib/gmail";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { cronBearerOk } from "@/lib/tokens";
 import { classifyError } from "@/lib/errors";
+import { classifyReply } from "@/lib/triage";
+import { mapWithLimit } from "@/lib/email-validator";
+import { markSenderRevoked } from "@/lib/sender-revoke";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,6 +44,15 @@ export async function GET(req: NextRequest) {
     skipped_bounce: number;
     saved: number;
     marked_replied: number;
+  }> = [];
+
+  // Replies saved this run that don't yet have an AI intent label.
+  // Function-scoped so the post-loop triage pass can see them.
+  const pendingClassify: Array<{
+    reply_id: string;
+    user_id: string;
+    subject: string | null;
+    body: string | null;
   }> = [];
 
   for (const s of senders) {
@@ -92,7 +104,11 @@ export async function GET(req: NextRequest) {
     } catch (e) {
       const errorClass = classifyError(e);
       if (s.auth_method === "oauth" && errorClass === "auth_revoked") {
-        await db.from("senders").update({ oauth_status: "revoked" }).eq("id", s.id);
+        await markSenderRevoked(db, {
+          sender_id: s.id,
+          sender_email: s.email,
+          user_id: s.user_id,
+        });
       }
       Sentry.captureException(e, {
         tags: { route: "check_replies", auth_method: s.auth_method, error_class: errorClass },
@@ -190,21 +206,37 @@ export async function GET(req: NextRequest) {
       }
       if (!hit) continue;
 
-      const { error } = await db.from("replies").upsert(
-        {
-          recipient_id: hit.id,
-          campaign_id: hit.campaign_id,
-          user_id: s.user_id,
-          from_email: msg.from,
-          subject: msg.subject,
-          snippet: msg.snippet,
-          body_text: msg.body_text,
-          body_html: msg.body_html,
-          received_at: msg.date?.toISOString() ?? null,
-        },
-        { onConflict: "recipient_id,received_at" }
-      );
+      const { data: savedRow, error } = await db
+        .from("replies")
+        .upsert(
+          {
+            recipient_id: hit.id,
+            campaign_id: hit.campaign_id,
+            user_id: s.user_id,
+            from_email: msg.from,
+            subject: msg.subject,
+            snippet: msg.snippet,
+            body_text: msg.body_text,
+            body_html: msg.body_html,
+            received_at: msg.date?.toISOString() ?? null,
+          },
+          { onConflict: "recipient_id,received_at" }
+        )
+        .select("id, intent")
+        .maybeSingle();
       if (!error) savedCount++;
+
+      // Queue for triage iff the row has no intent yet. onConflict means
+      // re-runs don't double-classify; we also skip rows already labelled
+      // by a previous tick.
+      if (savedRow && !savedRow.intent) {
+        pendingClassify.push({
+          reply_id: savedRow.id,
+          user_id: s.user_id,
+          subject: msg.subject,
+          body: msg.body_text,
+        });
+      }
 
       if (hit.status === "sent" || hit.status === "pending") {
         repliedRecipientIds.add(hit.id);
@@ -238,5 +270,52 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  return NextResponse.json({ status: "ok", results });
+  // ---- AI reply triage (Phase 3.3) ----
+  // Filter pendingClassify to users whose effective plan is growth or scale.
+  // Capped per tick so a backlog can't blow the 60s Vercel budget.
+  const TRIAGE_CAP_PER_TICK = 25;
+  const TRIAGE_CONCURRENCY = 4;
+  let triageRan = 0;
+
+  if (pendingClassify.length > 0 && process.env.ANTHROPIC_API_KEY) {
+    const userIds = Array.from(new Set(pendingClassify.map((p) => p.user_id)));
+    const { data: subs } = await db
+      .from("subscriptions")
+      .select("user_id, plan_id, status")
+      .in("user_id", userIds);
+    const eligible = new Set<string>();
+    for (const s of subs ?? []) {
+      if (
+        (s.plan_id === "growth" || s.plan_id === "scale") &&
+        ["active", "trialing", "past_due"].includes(s.status)
+      ) {
+        eligible.add(s.user_id);
+      }
+    }
+    const eligiblePending = pendingClassify
+      .filter((p) => eligible.has(p.user_id))
+      .slice(0, TRIAGE_CAP_PER_TICK);
+
+    if (eligiblePending.length > 0) {
+      const outcomes = await mapWithLimit(eligiblePending, TRIAGE_CONCURRENCY, async (p) => {
+        const out = await classifyReply({ subject: p.subject, body: p.body });
+        if (!out) return { id: p.reply_id, written: false };
+        const { error } = await db
+          .from("replies")
+          .update({ intent: out.intent, intent_confidence: out.confidence })
+          .eq("id", p.reply_id);
+        return { id: p.reply_id, written: !error };
+      });
+      triageRan = outcomes.filter((o) => o.written).length;
+    }
+  }
+
+  return NextResponse.json({
+    status: "ok",
+    results,
+    triage: {
+      pending: pendingClassify.length,
+      classified: triageRan,
+    },
+  });
 }

@@ -3,7 +3,21 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import AppShell from "@/components/AppShell";
-import ReplyDrawer, { type ReplyItem } from "@/components/ReplyDrawer";
+import ReplyDrawer, { type ReplyItem, type ReplyIntent } from "@/components/ReplyDrawer";
+
+const INTENT_LABELS: Record<ReplyIntent | "uncategorized", { label: string; chipClass: string }> = {
+  interested:    { label: "Interested",    chipClass: "bg-green-50 text-green-700  border-green-200" },
+  question:      { label: "Question",      chipClass: "bg-blue-50  text-blue-700   border-blue-200" },
+  not_now:       { label: "Not now",       chipClass: "bg-amber-50 text-amber-700  border-amber-200" },
+  unsubscribe:   { label: "Unsubscribe",   chipClass: "bg-red-50   text-red-700    border-red-200" },
+  ooo:           { label: "Out of office", chipClass: "bg-ink-100  text-ink-600    border-ink-200" },
+  bounce:        { label: "Bounce",        chipClass: "bg-ink-100  text-ink-600    border-ink-200" },
+  other:         { label: "Other",         chipClass: "bg-ink-100  text-ink-600    border-ink-200" },
+  uncategorized: { label: "Uncategorized", chipClass: "bg-ink-100  text-ink-500    border-ink-200" },
+};
+const INTENT_ORDER: Array<ReplyIntent | "uncategorized"> = [
+  "interested", "question", "not_now", "unsubscribe", "ooo", "bounce", "other", "uncategorized",
+];
 
 export default function RepliesPage() {
   const [replies, setReplies] = useState<ReplyItem[] | null>(null);
@@ -11,6 +25,7 @@ export default function RepliesPage() {
   const [active, setActive] = useState<ReplyItem | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [intentFilter, setIntentFilter] = useState<ReplyIntent | "uncategorized" | "all">("all");
 
   async function load() {
     const r = await fetch("/api/replies", { cache: "no-store" });
@@ -45,8 +60,12 @@ export default function RepliesPage() {
   const filtered = useMemo(() => {
     if (!replies) return null;
     const q = query.trim().toLowerCase();
-    if (!q) return replies;
     return replies.filter((r) => {
+      if (intentFilter !== "all") {
+        const slot = r.intent ?? "uncategorized";
+        if (slot !== intentFilter) return false;
+      }
+      if (!q) return true;
       const hay = [
         r.recipient?.name,
         r.recipient?.company,
@@ -60,11 +79,24 @@ export default function RepliesPage() {
         .toLowerCase();
       return hay.includes(q);
     });
-  }, [replies, query]);
+  }, [replies, query, intentFilter]);
+
+  // Counts per intent slot — drives chip badges + chip visibility.
+  const intentCounts = useMemo(() => {
+    const counts: Record<ReplyIntent | "uncategorized", number> = {
+      interested: 0, question: 0, not_now: 0, unsubscribe: 0,
+      ooo: 0, bounce: 0, other: 0, uncategorized: 0,
+    };
+    for (const r of replies ?? []) {
+      const slot = r.intent ?? "uncategorized";
+      counts[slot]++;
+    }
+    return counts;
+  }, [replies]);
 
   const totalCount = replies?.length ?? 0;
   const filteredCount = filtered?.length ?? 0;
-  const isFiltering = query.trim().length > 0;
+  const isFiltering = query.trim().length > 0 || intentFilter !== "all";
 
   return (
     <AppShell>
@@ -84,6 +116,44 @@ export default function RepliesPage() {
             {running ? "Loading…" : "Reload"}
           </button>
         </div>
+
+        {replies && replies.length > 0 && (
+          <div className="mb-3 flex items-center gap-1.5 flex-wrap">
+            <button
+              type="button"
+              onClick={() => setIntentFilter("all")}
+              className={
+                "px-2.5 py-1 rounded-full text-[12px] border transition-colors " +
+                (intentFilter === "all"
+                  ? "bg-ink text-paper border-ink"
+                  : "bg-paper text-ink-700 border-ink-200 hover:bg-hover")
+              }
+            >
+              All <span className="font-mono text-[11px] opacity-60">{totalCount}</span>
+            </button>
+            {INTENT_ORDER.map((slot) => {
+              const n = intentCounts[slot];
+              if (n === 0) return null;
+              const meta = INTENT_LABELS[slot];
+              const active = intentFilter === slot;
+              return (
+                <button
+                  key={slot}
+                  type="button"
+                  onClick={() => setIntentFilter(active ? "all" : slot)}
+                  className={
+                    "px-2.5 py-1 rounded-full text-[12px] border transition-colors " +
+                    (active
+                      ? "bg-ink text-paper border-ink"
+                      : meta.chipClass + " hover:opacity-80")
+                  }
+                >
+                  {meta.label} <span className="font-mono text-[11px] opacity-70">{n}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {replies && replies.length > 0 && (
           <div className="mb-4 relative">
@@ -152,13 +222,24 @@ export default function RepliesPage() {
                     )}
                     {r.campaign && (
                       <Link
-                        href={`/campaigns/${r.campaign.id}`}
+                        href={`/app/campaigns/${r.campaign.id}`}
                         onClick={(e) => e.stopPropagation()}
                         className="pill-paper hover:bg-ink hover:text-paper transition-colors"
                       >
                         {r.campaign.name}
                       </Link>
                     )}
+                    {r.intent && (() => {
+                      const meta = INTENT_LABELS[r.intent];
+                      return (
+                        <span
+                          className={"px-1.5 py-0.5 rounded text-[10px] border " + meta.chipClass}
+                          title={r.intent_confidence != null ? `confidence ${(r.intent_confidence * 100).toFixed(0)}%` : undefined}
+                        >
+                          {meta.label}
+                        </span>
+                      );
+                    })()}
                   </div>
                   <div className="text-[13px] text-ink-700 mt-0.5 truncate" title={r.subject ?? ""}>
                     {r.subject ?? <span className="italic text-ink-400">(no subject)</span>}

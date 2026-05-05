@@ -13,6 +13,7 @@ export async function GET() {
     .from("replies")
     .select(`
       id, from_email, subject, snippet, body_text, body_html, received_at, created_at,
+      intent, intent_confidence,
       recipient:recipients(id, name, company),
       campaign:campaigns(id, name)
     `)

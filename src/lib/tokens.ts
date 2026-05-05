@@ -38,7 +38,17 @@ export function verifyToken(kind: "u" | "o" | "c", token: string): string | null
 }
 
 export function appUrl() {
-  return (process.env.APP_URL ?? "http://localhost:3000").replace(/\/$/, "");
+  const url = process.env.APP_URL;
+  if (!url) {
+    if (process.env.NODE_ENV === "production") {
+      // Without APP_URL, every tracking pixel and unsubscribe link
+      // generated this request would 404 silently. Fail loud in prod —
+      // dev still gets the localhost default.
+      throw new Error("APP_URL not set in production");
+    }
+    return "http://localhost:3000";
+  }
+  return url.replace(/\/$/, "");
 }
 
 // Constant-time equality for the cron bearer header.

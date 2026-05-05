@@ -47,23 +47,24 @@ export async function GET(req: Request) {
   const { data: campaigns, error } = await q;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  // Count per campaign. Using head:true count queries so we don't transfer
-  // rows — just totals. Parallelized so it's still one round-trip of latency.
-  const enriched = await Promise.all(
-    (campaigns ?? []).map(async (c) => {
-      const [total, sent, failed] = await Promise.all([
-        db.from("recipients").select("*", { count: "exact", head: true }).eq("campaign_id", c.id),
-        db.from("recipients").select("*", { count: "exact", head: true }).eq("campaign_id", c.id).in("status", ["sent", "replied"]),
-        db.from("recipients").select("*", { count: "exact", head: true }).eq("campaign_id", c.id).in("status", ["failed", "bounced"]),
-      ]);
-      return {
-        ...c,
-        total: total.count ?? 0,
-        sent: sent.count ?? 0,
-        failed: failed.count ?? 0,
-      };
-    })
-  );
+  // Per-campaign counts via the campaign_status_counts() Postgres
+  // function — one indexed aggregation, vs the previous N+1 of three
+  // head-count queries per campaign. Function is SECURITY INVOKER so
+  // RLS applies through the supabaseUser() JWT.
+  type CountRow = { campaign_id: string; total: number; sent: number; failed: number };
+  const buckets = new Map<string, { total: number; sent: number; failed: number }>();
+  const { data: countsRaw } = await db.rpc("campaign_status_counts", { p_user_id: u.id });
+  for (const row of (countsRaw ?? []) as CountRow[]) {
+    buckets.set(row.campaign_id, {
+      total: row.total,
+      sent: row.sent,
+      failed: row.failed,
+    });
+  }
+  const enriched = (campaigns ?? []).map((c) => ({
+    ...c,
+    ...(buckets.get(c.id) ?? { total: 0, sent: 0, failed: 0 }),
+  }));
   return NextResponse.json({ campaigns: enriched });
 }
 

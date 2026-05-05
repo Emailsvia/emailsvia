@@ -90,6 +90,10 @@ export default function CampaignDetail({ params }: { params: Promise<{ id: strin
   const [activity, setActivity] = useState<{ recipients: ActivityRecipient[]; links: { url: string; total_clicks: number; unique_clickers: number }[] } | null>(null);
   const [activeRecipient, setActiveRecipient] = useState<ActivityRecipient | null>(null);
   const [sortByScore, setSortByScore] = useState(false);
+  const [ticking, setTicking] = useState(false);
+  // Dev-mode flag (toggle "Run tick" button visibility). Source of truth
+  // is the /api/billing GET — server side env check, doesn't leak in prod.
+  const [devMode, setDevMode] = useState(false);
   const [preflight, setPreflight] = useState<{
     strict_merge: boolean;
     tags: string[];
@@ -130,8 +134,30 @@ export default function CampaignDetail({ params }: { params: Promise<{ id: strin
     loadActivity();
     loadPreflight();
     fetch("/api/senders", { cache: "no-store" }).then((r) => r.json()).then((d) => setSenders(d.senders ?? []));
-    const t = setInterval(() => { load(); loadStats(); loadActivity(); loadPreflight(); }, 10_000);
-    return () => clearInterval(t);
+    fetch("/api/billing", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => setDevMode(!!d.dev_mode))
+      .catch(() => undefined);
+    // Two-tier polling: light queries (campaign + stats) refresh fast for
+    // live "sent N of M" feedback. Heavy queries (activity timeline,
+    // pre-flight scan) refresh slowly — they fan out over thousands of
+    // recipients/tracking events on big campaigns. Pause both when the
+    // tab is hidden so a backgrounded user doesn't poll forever.
+    const isVisible = () => typeof document === "undefined" || document.visibilityState === "visible";
+    const fastPoll = setInterval(() => {
+      if (!isVisible()) return;
+      load();
+      loadStats();
+    }, 10_000);
+    const slowPoll = setInterval(() => {
+      if (!isVisible()) return;
+      loadActivity();
+      loadPreflight();
+    }, 60_000);
+    return () => {
+      clearInterval(fastPoll);
+      clearInterval(slowPoll);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
@@ -147,7 +173,7 @@ export default function CampaignDetail({ params }: { params: Promise<{ id: strin
   async function destroy() {
     if (!confirm("Delete this campaign and all its recipients? This cannot be undone.")) return;
     const r = await fetch(`/api/campaigns/${id}`, { method: "DELETE" });
-    if (r.ok) router.push("/");
+    if (r.ok) router.push("/app");
   }
 
   async function duplicate() {
@@ -163,7 +189,7 @@ export default function CampaignDetail({ params }: { params: Promise<{ id: strin
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ archived: true }),
     });
-    router.push("/");
+    router.push("/app");
   }
 
   const [validating, setValidating] = useState(false);
@@ -214,7 +240,7 @@ export default function CampaignDetail({ params }: { params: Promise<{ id: strin
   return (
     <AppShell>
     <div className="page">
-      <Link href="/" className="btn-link text-[12px]">← Campaigns</Link>
+      <Link href="/app" className="btn-link text-[12px]">← Campaigns</Link>
 
       <header className="mt-4 flex items-start justify-between gap-4 flex-wrap pb-5 border-b border-ink-200">
         <div className="min-w-0">
@@ -231,6 +257,33 @@ export default function CampaignDetail({ params }: { params: Promise<{ id: strin
           )}
           {campaign.status === "running" && (
             <button className="btn-ghost" onClick={() => patch({ status: "paused" })}>Pause</button>
+          )}
+          {devMode && campaign.status === "running" && pending > 0 && (
+            <button
+              className="btn-ghost"
+              title="Dev mode: there's no scheduler hitting /api/tick locally — click to send the next batch immediately."
+              disabled={ticking}
+              onClick={async () => {
+                setTicking(true);
+                try {
+                  const r = await fetch("/api/dev/tick", {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ burst: 30 }),
+                  });
+                  const d = await r.json();
+                  if (!r.ok) {
+                    alert(`Tick failed: ${d.error ?? r.status}`);
+                  }
+                  // refresh stats / recipients so the UI reflects new sends
+                  await Promise.all([load(), loadStats(), loadActivity()]);
+                } finally {
+                  setTicking(false);
+                }
+              }}
+            >
+              {ticking ? "Sending…" : "Run tick"}
+            </button>
           )}
           <Link href={`/app/campaigns/${id}/edit`} className="btn-ghost">Edit</Link>
           {pending > 0 && <button className="btn-quiet" onClick={validateEmails} disabled={validating}>{validating ? "Validating…" : "Validate"}</button>}

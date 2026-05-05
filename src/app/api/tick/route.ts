@@ -41,8 +41,11 @@ export async function GET(req: NextRequest) {
   });
   if (lockErr) {
     // Lock function missing (migration 0009 not applied) — fall through so
-    // the app keeps working. Logged so we notice in dev.
-    console.warn("[tick] try_tick_lock failed, proceeding without lock:", lockErr.message);
+    // the app keeps working. Sentry-captured so we notice in prod; not a
+    // user-facing error.
+    Sentry.captureException(new Error(`tick lock unavailable: ${lockErr.message}`), {
+      tags: { route: "tick", op: "lock_acquire" },
+    });
   } else if (gotLock !== true) {
     return NextResponse.json({ status: "lock_held" });
   }

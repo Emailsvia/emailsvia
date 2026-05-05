@@ -15,24 +15,32 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   const { id } = await ctx.params;
   const db = await supabaseUser();
 
+  // Activity timeline is bounded — at the cap the engagement-by-recipient
+  // table simply truncates to the most-engaged 5K. Beyond that the page
+  // is unreadable anyway and the polling payload is what kills perf.
+  // Tracking + send_log are tied to recipients so the same cap applies.
+  const ROW_CAP = 5000;
   const [recipientsRes, sendLogRes, trackingRes, repliesRes] = await Promise.all([
     db.from("recipients")
       .select("id, name, email, company, status, sent_at, replied_at")
       .eq("campaign_id", id)
       .order("row_index", { ascending: true })
-      .range(0, 99999),
+      .range(0, ROW_CAP - 1),
     db.from("send_log")
       .select("recipient_id, kind, step_number, sent_at")
       .eq("campaign_id", id)
-      .range(0, 99999),
+      .order("sent_at", { ascending: false })
+      .range(0, ROW_CAP - 1),
     db.from("tracking_events")
       .select("recipient_id, kind, url, user_agent, created_at")
       .eq("campaign_id", id)
-      .range(0, 99999),
+      .order("created_at", { ascending: false })
+      .range(0, ROW_CAP - 1),
     db.from("replies")
       .select("recipient_id, subject, snippet, received_at, created_at")
       .eq("campaign_id", id)
-      .range(0, 9999),
+      .order("received_at", { ascending: false, nullsFirst: false })
+      .range(0, 999),
   ]);
 
   const recipients = recipientsRes.data ?? [];

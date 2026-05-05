@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import DOMPurify from "isomorphic-dompurify";
 
 export type ReplyIntent =
   | "interested"
@@ -26,15 +27,21 @@ export type ReplyItem = {
   campaign: { id: string; name: string } | null;
 };
 
+// Inbound reply HTML comes from arbitrary senders — anyone with our
+// recipient's address can craft a malicious reply. The previous regex-
+// based sanitizer was bypassable (`<scr<script>ipt>` survived; unquoted
+// `onclick=foo()` slipped through). isomorphic-dompurify uses jsdom
+// server-side and the real DOMPurify in the browser; same allow-list
+// in both environments.
 function sanitizeHtml(html: string): string {
-  // Quick-and-dirty sanitizer: strip <script>, <style>, on*= handlers, and javascript: URLs.
-  // Anything more sophisticated would need DOMPurify; for our own-inbox replies this is fine.
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/\son\w+="[^"]*"/gi, "")
-    .replace(/\son\w+='[^']*'/gi, "")
-    .replace(/javascript:/gi, "");
+  return DOMPurify.sanitize(html, {
+    USE_PROFILES: { html: true },
+    FORBID_TAGS: ["style", "iframe", "form", "input", "button", "object", "embed", "link", "meta"],
+    FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus", "onblur"],
+    // Drop CSS expressions + javascript: URLs entirely; allow image
+    // proxies and standard https/http/mailto/tel.
+    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel|cid):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i,
+  });
 }
 
 export default function ReplyDrawer({

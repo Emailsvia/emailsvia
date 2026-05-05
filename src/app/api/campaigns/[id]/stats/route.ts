@@ -35,8 +35,12 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     db.from("send_log").select("*", { count: "exact", head: true }).eq("campaign_id", id).eq("kind", "retry").is("error_class", null),
     db.from("tracking_events").select("*", { count: "exact", head: true }).eq("campaign_id", id).eq("kind", "open"),
     db.from("tracking_events").select("*", { count: "exact", head: true }).eq("campaign_id", id).eq("kind", "click"),
-    db.from("tracking_events").select("recipient_id").eq("campaign_id", id).eq("kind", "open").range(0, 99999),
-    db.from("tracking_events").select("recipient_id").eq("campaign_id", id).eq("kind", "click").range(0, 99999),
+    // Unique-opener / unique-clicker dedupe is bucketed client-side from
+    // recipient_id rows. Capped at 20K — beyond that, a Postgres
+    // `count(distinct recipient_id)` RPC would be the right answer; the
+    // cap is well above any realistic per-campaign open count.
+    db.from("tracking_events").select("recipient_id").eq("campaign_id", id).eq("kind", "open").range(0, 19_999),
+    db.from("tracking_events").select("recipient_id").eq("campaign_id", id).eq("kind", "click").range(0, 19_999),
   ]);
 
   const uniqOpen = new Set((uniqueOpeners.data ?? []).map((r: { recipient_id: string }) => r.recipient_id)).size;
@@ -47,9 +51,12 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   const { data: campTz } = await db.from("campaigns").select("timezone").eq("id", id).maybeSingle();
   const tz = campTz?.timezone || "Asia/Kolkata";
 
+  // Hourly + weekday bucketing — same cap as above. A SQL
+  // `extract(hour from created_at) group by` RPC would scale better but
+  // 20K is well over a typical campaign's open count.
   const [openRowsRes, clickRowsRes] = await Promise.all([
-    db.from("tracking_events").select("created_at").eq("campaign_id", id).eq("kind", "open").range(0, 99999),
-    db.from("tracking_events").select("created_at").eq("campaign_id", id).eq("kind", "click").range(0, 99999),
+    db.from("tracking_events").select("created_at").eq("campaign_id", id).eq("kind", "open").range(0, 19_999),
+    db.from("tracking_events").select("created_at").eq("campaign_id", id).eq("kind", "click").range(0, 19_999),
   ]);
   const openRows = openRowsRes.data ?? [];
   const clickRows = clickRowsRes.data ?? [];

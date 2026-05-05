@@ -20,7 +20,7 @@ export default function EditCampaignPage({ params }: { params: Promise<{ id: str
       fetch(`/api/campaigns/${id}/follow-ups`, { cache: "no-store" }).then((r) => r.json()),
     ]).then(([c, fu]) => {
       if (cancel) return;
-      if (!c.campaign) { router.push("/"); return; }
+      if (!c.campaign) { router.push("/app"); return; }
       const camp = c.campaign;
       setInitial({
         id: camp.id,

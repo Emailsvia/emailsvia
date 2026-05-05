@@ -42,6 +42,22 @@ export async function POST(req: NextRequest) {
 
   const db = supabaseAdmin();
 
+  // Idempotency. Stripe retries on any non-2xx; without this, a network
+  // blip after our DB upsert but before the 200 response would re-process
+  // the same event. Insert event.id; on conflict we've already processed
+  // it and bail with a fresh 200 so Stripe stops retrying.
+  const { error: dupErr } = await db
+    .from("processed_stripe_events")
+    .insert({ event_id: event.id, type: event.type });
+  if (dupErr) {
+    // Unique-violation means we've seen this event id before. Anything
+    // else is a real DB error and we 5xx so Stripe retries us.
+    if (dupErr.code === "23505") {
+      return NextResponse.json({ received: true, duplicate: true });
+    }
+    return NextResponse.json({ error: dupErr.message }, { status: 500 });
+  }
+
   switch (event.type) {
     case "checkout.session.completed": {
       const session = event.data.object as Stripe.Checkout.Session;

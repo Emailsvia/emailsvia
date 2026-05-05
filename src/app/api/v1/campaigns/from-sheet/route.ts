@@ -2,11 +2,30 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { supabaseAdmin } from "@/lib/supabase";
 import { extractApiKey, authenticateApiKey } from "@/lib/api-key";
-import { getPlanForUser, importRowLimit } from "@/lib/billing";
+import { getPlanForUser, importRowLimit, hasFeature } from "@/lib/billing";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
+
+// Public API — open CORS so browser SDKs / Apps Script side-channels
+// can call it. The Bearer-token auth is the actual security boundary;
+// CORS is just enabling cross-origin client access.
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Authorization, Content-Type",
+  "Access-Control-Max-Age": "86400",
+};
+
+export function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
+}
+
+function withCors(res: NextResponse): NextResponse {
+  for (const [k, v] of Object.entries(CORS_HEADERS)) res.headers.set(k, v);
+  return res;
+}
 
 // Public-API endpoint: create a campaign + recipients in a single call.
 // Driven by the Google Sheets add-on (Phase 2): the user picks a sheet,
@@ -44,6 +63,10 @@ const Schema = z.object({
 });
 
 export async function POST(req: NextRequest) {
+  return withCors(await handle(req));
+}
+
+async function handle(req: NextRequest): Promise<NextResponse> {
   // ---- auth ----
   const rawToken = extractApiKey(req.headers.get("authorization"));
   if (!rawToken) return NextResponse.json({ error: "missing_api_key" }, { status: 401 });
@@ -61,9 +84,24 @@ export async function POST(req: NextRequest) {
   }
   const input = parsed.data;
 
-  // ---- plan gate: row count ----
+  // ---- plan gate: public_api feature ----
+  // Sheets add-on + direct API both call this endpoint. Public API access
+  // is a Scale-tier feature; lower tiers get a clean upgrade message
+  // (Sheets add-on flow only available on Scale).
   const db = supabaseAdmin();
   const { plan } = await getPlanForUser(db, auth.user_id);
+  if (!hasFeature(plan, "public_api")) {
+    return NextResponse.json(
+      {
+        error: "public_api_not_enabled",
+        message: `Public API + Sheets add-on require the Scale plan. Your current plan is ${plan.name}.`,
+        plan: plan.id,
+      },
+      { status: 402 }
+    );
+  }
+
+  // ---- plan gate: row count ----
   const rowLimit = importRowLimit(plan);
   if (rowLimit !== null && input.rows.length > rowLimit) {
     return NextResponse.json(

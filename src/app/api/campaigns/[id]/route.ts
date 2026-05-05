@@ -39,20 +39,41 @@ const PatchSchema = z.object({
   archived: z.boolean().optional(),
 });
 
-export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+// Cap on the recipients fetch returned by the campaign-detail page.
+// Higher than this, the UI table is unusable anyway and the polling
+// payload becomes the bottleneck. Pagination via ?offset=N for power
+// users who need to scroll past it.
+const RECIPIENTS_PAGE_SIZE = 1000;
+
+export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const u = await getUser();
   if (!u) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   const { id } = await ctx.params;
   const db = await supabaseUser();
   const { data: campaign } = await db.from("campaigns").select("*").eq("id", id).maybeSingle();
   if (!campaign) return NextResponse.json({ error: "not_found" }, { status: 404 });
-  const { data: recipients } = await db
+
+  const offsetParam = Number(req.nextUrl.searchParams.get("offset") ?? "0");
+  const offset = Number.isFinite(offsetParam) && offsetParam >= 0 ? Math.floor(offsetParam) : 0;
+  const limit = RECIPIENTS_PAGE_SIZE;
+
+  const { data: recipients, count } = await db
     .from("recipients")
-    .select("*")
+    .select("*", { count: "exact" })
     .eq("campaign_id", id)
     .order("row_index", { ascending: true })
-    .range(0, 99999);
-  return NextResponse.json({ campaign, recipients: recipients ?? [] });
+    .range(offset, offset + limit - 1);
+
+  return NextResponse.json({
+    campaign,
+    recipients: recipients ?? [],
+    pagination: {
+      offset,
+      limit,
+      total: count ?? recipients?.length ?? 0,
+      has_more: (count ?? 0) > offset + (recipients?.length ?? 0),
+    },
+  });
 }
 
 export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {

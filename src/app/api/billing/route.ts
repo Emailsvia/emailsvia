@@ -31,11 +31,24 @@ export async function GET() {
     .eq("day", day)
     .maybeSingle();
 
+  // Tell the UI whether Stripe is fully configured (all three paid-tier
+  // price IDs set). When false, the billing page falls back to a dev
+  // shortcut endpoint that flips plan_id directly. Production deploys
+  // ship with all three set, so this collapses to true.
+  const stripeConfigured = !!(
+    process.env.STRIPE_SECRET_KEY &&
+    process.env.STRIPE_PRICE_STARTER &&
+    process.env.STRIPE_PRICE_GROWTH &&
+    process.env.STRIPE_PRICE_SCALE
+  );
+
   return NextResponse.json({
     plan,
     subscription,
     sent_today: usage?.sent ?? 0,
     day,
     timezone: tz,
+    stripe_configured: stripeConfigured,
+    dev_mode: process.env.NODE_ENV !== "production",
   });
 }

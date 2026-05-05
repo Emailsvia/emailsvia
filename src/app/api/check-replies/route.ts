@@ -21,12 +21,38 @@ function normalizeMsgId(v: string | null | undefined): string | null {
   return t.startsWith("<") ? t : `<${t.replace(/^[<\s]+|[>\s]+$/g, "")}>`;
 }
 
+// Same lease-based lock pattern as /api/tick. Two cron deliveries that
+// overlap (manual curl + pg_cron) would otherwise both poll Gmail, race
+// on senders.oauth_access_token, and double-charge Anthropic for the
+// classification calls.
+const CHECK_REPLIES_LOCK_KEY = "emailsvia:check-replies";
+const CHECK_REPLIES_LOCK_TTL_SECONDS = 55;
+
 export async function GET(req: NextRequest) {
   if (!cronBearerOk(req.headers.get("authorization"))) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
   const db = supabaseAdmin();
+
+  const { data: gotLock, error: lockErr } = await db.rpc("try_tick_lock", {
+    lock_key: CHECK_REPLIES_LOCK_KEY,
+    ttl_seconds: CHECK_REPLIES_LOCK_TTL_SECONDS,
+  });
+  if (!lockErr && gotLock !== true) {
+    return NextResponse.json({ status: "lock_held" });
+  }
+
+  try {
+    return await runCheckReplies(db);
+  } finally {
+    if (!lockErr) {
+      await db.rpc("release_tick_lock", { lock_key: CHECK_REPLIES_LOCK_KEY });
+    }
+  }
+}
+
+async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<NextResponse> {
   const { data: senders } = await db
     .from("senders")
     .select(
@@ -146,10 +172,16 @@ export async function GET(req: NextRequest) {
     }
 
     // Fetch recipients in this sender's campaigns (email + message_id both matter).
+    // Only recipients whose initial mail actually went out can plausibly
+    // receive a reply (sent or replied — the latter still receives
+    // follow-up replies on the same thread). Skip pending / unsubscribed
+    // / failed / bounced. Matters once a sender has 100K+ historical
+    // recipients across many campaigns.
     const { data: recipientsRows } = await db
       .from("recipients")
       .select("id, email, campaign_id, status, message_id")
       .in("campaign_id", campaignIds)
+      .in("status", ["sent", "replied"])
       .range(0, 99999);
 
     // Two indexes: by message_id (authoritative — this is a genuine thread reply)
@@ -254,7 +286,11 @@ export async function GET(req: NextRequest) {
         })
         .in("id", Array.from(repliedRecipientIds))
         .select("id");
-      if (upErr) console.error("[check-replies] update failed:", upErr);
+      if (upErr) {
+        Sentry.captureException(new Error(upErr.message), {
+          tags: { route: "check_replies", op: "mark_replied" },
+        });
+      }
       markedReplied = updated?.length ?? 0;
     }
 

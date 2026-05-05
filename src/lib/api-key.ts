@@ -84,12 +84,13 @@ export async function authenticateApiKey(
     .eq("key_hash", hashKey(rawToken))
     .maybeSingle();
   if (!data) return null;
-  // Fire-and-forget last-used update so concurrent requests don't serialize.
-  // ~1 write per request is cheap; we don't await.
-  void db
+  // Update last_used_at synchronously. Tempting to fire-and-forget for
+  // latency, but Vercel kills the Lambda the moment the response is
+  // returned — the unawaited write would silently never land. Worth the
+  // ~5ms.
+  await db
     .from("api_keys")
     .update({ last_used_at: new Date().toISOString() })
-    .eq("id", data.id)
-    .then(() => undefined);
+    .eq("id", data.id);
   return { user_id: data.user_id, key_id: data.id };
 }

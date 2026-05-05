@@ -177,7 +177,7 @@ export default function KeysPage() {
             Pass the token as a Bearer header on every request to the public API.
           </p>
           <pre className="text-[11px] font-mono bg-surface border border-ink-200 rounded px-3 py-2 overflow-x-auto">
-{`curl -X POST https://emailsvia.com/api/v1/campaigns/from-sheet \\
+{`curl -X POST ${typeof window !== "undefined" ? window.location.origin : ""}/api/v1/campaigns/from-sheet \\
   -H "Authorization: Bearer eav_live_..." \\
   -H "Content-Type: application/json" \\
   -d '{

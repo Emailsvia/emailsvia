@@ -29,6 +29,8 @@ type BillingState = {
   sent_today: number;
   day: string;
   timezone: string;
+  stripe_configured: boolean;
+  dev_mode: boolean;
 };
 
 const TIERS: Array<{
@@ -104,9 +106,35 @@ export default function BillingPage() {
     }
   }, []);
 
-  async function startCheckout(plan: Exclude<PlanId, "free">) {
+  async function startCheckout(plan: PlanId) {
     setBusy(plan);
     try {
+      // Local-dev shortcut: when Stripe price IDs aren't set, flip the
+      // plan directly via the dev-only endpoint so the rest of the app
+      // (feature gates, daily-cap quota, etc.) is testable without
+      // setting up Stripe products + webhooks.
+      if (state && !state.stripe_configured && state.dev_mode) {
+        const r = await fetch("/api/dev/set-plan", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ plan }),
+        });
+        const data = await r.json();
+        if (!r.ok) {
+          setFlash({ kind: "err", msg: data.error ?? `Couldn't set plan (${r.status}).` });
+          return;
+        }
+        setFlash({ kind: "ok", msg: `Switched to ${plan} (dev mode — no charge).` });
+        await load();
+        return;
+      }
+
+      // Stripe path — only paid tiers. Free downgrade goes through the
+      // customer portal in production, never this entry point.
+      if (plan === "free") {
+        setFlash({ kind: "err", msg: "Free downgrade goes through the Customer Portal — click “Manage subscription”." });
+        return;
+      }
       const r = await fetch("/api/stripe/checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -154,6 +182,14 @@ export default function BillingPage() {
             }
           >
             {flash.msg}
+          </div>
+        )}
+
+        {state && state.dev_mode && !state.stripe_configured && (
+          <div className="mb-4 px-3 py-2 rounded-md text-[13px] bg-amber-50 text-amber-700 border border-amber-200">
+            <b>Dev mode</b> &mdash; Stripe products aren&rsquo;t configured. Upgrade buttons flip
+            your plan directly with no payment so feature gates can be tested. This shortcut is
+            disabled in production builds.
           </div>
         )}
 
@@ -240,7 +276,19 @@ export default function BillingPage() {
                       {busy === "portal" ? "Opening…" : "Change in portal"}
                     </button>
                   )}
-                  {isDowngrade && !state?.subscription?.stripe_customer_id && (
+                  {/* Dev shortcut: downgrade goes through the same set-plan
+                      endpoint as upgrade. In prod the only path is the
+                      Stripe customer portal (handled above). */}
+                  {isDowngrade && !state?.subscription?.stripe_customer_id && state?.dev_mode && !state?.stripe_configured && (
+                    <button
+                      className="btn-ghost w-full"
+                      disabled={busy === t.id}
+                      onClick={() => startCheckout(t.id)}
+                    >
+                      {busy === t.id ? "Switching…" : `Switch to ${t.name}`}
+                    </button>
+                  )}
+                  {isDowngrade && !state?.subscription?.stripe_customer_id && !(state?.dev_mode && !state?.stripe_configured) && (
                     <button className="btn-ghost w-full" disabled>
                       Lower tier
                     </button>

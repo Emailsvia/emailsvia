@@ -21,7 +21,19 @@ export async function GET(req: NextRequest) {
   }
 
   const dest = req.nextUrl.clone();
-  dest.pathname = next.startsWith("/") ? next : "/app";
+  dest.pathname = safeNext(next);
   dest.search = "";
   return NextResponse.redirect(dest);
+}
+
+// Allow only same-origin paths starting with a single slash. Rejects
+// protocol-relative (`//evil.com/x`), absolute URLs (`https://evil.com`),
+// and any value that doesn't begin with "/". Defends against open-redirect
+// abuse when the `next` param flows through a tampered link.
+function safeNext(value: string): string {
+  if (typeof value !== "string") return "/app";
+  if (!value.startsWith("/")) return "/app";
+  if (value.startsWith("//")) return "/app"; // protocol-relative
+  if (value.startsWith("/\\")) return "/app"; // backslash variant
+  return value;
 }

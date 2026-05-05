@@ -1,0 +1,242 @@
+import { NextRequest, NextResponse } from "next/server";
+import * as Sentry from "@sentry/nextjs";
+import { supabaseAdmin } from "@/lib/supabase";
+import { fetchIncomingMessages } from "@/lib/replies";
+import { listInboxSince } from "@/lib/gmail";
+import { decryptSecret, encryptSecret } from "@/lib/crypto";
+import { cronBearerOk } from "@/lib/tokens";
+import { classifyError } from "@/lib/errors";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
+
+function normalizeMsgId(v: string | null | undefined): string | null {
+  if (!v) return null;
+  const t = v.trim();
+  if (!t) return null;
+  return t.startsWith("<") ? t : `<${t.replace(/^[<\s]+|[>\s]+$/g, "")}>`;
+}
+
+export async function GET(req: NextRequest) {
+  if (!cronBearerOk(req.headers.get("authorization"))) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  const db = supabaseAdmin();
+  const { data: senders } = await db
+    .from("senders")
+    .select(
+      "id, email, app_password, user_id, auth_method, oauth_refresh_token, oauth_access_token, oauth_expires_at, oauth_status"
+    );
+  if (!senders || senders.length === 0) return NextResponse.json({ status: "no_senders" });
+
+  const since = new Date(Date.now() - 7 * 86400 * 1000);
+  const results: Array<{
+    sender: string;
+    checked: number;
+    matched_by_thread: number;
+    matched_by_from: number;
+    skipped_auto: number;
+    skipped_bounce: number;
+    saved: number;
+    marked_replied: number;
+  }> = [];
+
+  for (const s of senders) {
+    let messages;
+    try {
+      if (s.auth_method === "oauth") {
+        if (s.oauth_status !== "ok" || !s.oauth_refresh_token) {
+          // Skip revoked senders entirely — counts as 0 checked.
+          results.push({
+            sender: s.email, checked: 0,
+            matched_by_thread: 0, matched_by_from: 0,
+            skipped_auto: 0, skipped_bounce: 0, saved: 0, marked_replied: 0,
+          });
+          continue;
+        }
+        const out = await listInboxSince(
+          {
+            email: s.email,
+            refreshToken: decryptSecret(s.oauth_refresh_token),
+            accessToken: s.oauth_access_token ? decryptSecret(s.oauth_access_token) : null,
+            expiresAt: s.oauth_expires_at ? new Date(s.oauth_expires_at) : null,
+          },
+          since
+        );
+        messages = out.messages;
+        if (out.tokensRefreshed) {
+          await db
+            .from("senders")
+            .update({
+              oauth_access_token: encryptSecret(out.tokensRefreshed.accessToken),
+              oauth_expires_at: out.tokensRefreshed.expiresAt.toISOString(),
+            })
+            .eq("id", s.id);
+        }
+      } else if (s.app_password) {
+        messages = await fetchIncomingMessages(
+          { email: s.email, appPassword: decryptSecret(s.app_password) },
+          since
+        );
+      } else {
+        // Sender has neither app password nor refresh token — misconfigured row.
+        results.push({
+          sender: s.email, checked: 0,
+          matched_by_thread: 0, matched_by_from: 0,
+          skipped_auto: 0, skipped_bounce: 0, saved: 0, marked_replied: 0,
+        });
+        continue;
+      }
+    } catch (e) {
+      const errorClass = classifyError(e);
+      if (s.auth_method === "oauth" && errorClass === "auth_revoked") {
+        await db.from("senders").update({ oauth_status: "revoked" }).eq("id", s.id);
+      }
+      Sentry.captureException(e, {
+        tags: { route: "check_replies", auth_method: s.auth_method, error_class: errorClass },
+        contexts: { sender: { id: s.id, email: s.email } },
+      });
+      results.push({
+        sender: s.email, checked: 0,
+        matched_by_thread: 0, matched_by_from: 0,
+        skipped_auto: 0, skipped_bounce: 0, saved: 0, marked_replied: -1,
+      });
+      continue;
+    }
+    if (messages.length === 0) {
+      results.push({
+        sender: s.email, checked: 0,
+        matched_by_thread: 0, matched_by_from: 0,
+        skipped_auto: 0, skipped_bounce: 0, saved: 0, marked_replied: 0,
+      });
+      continue;
+    }
+
+    // Campaigns for this sender
+    const { data: campaignRows } = await db
+      .from("campaigns")
+      .select("id")
+      .eq("sender_id", s.id);
+    const campaignIds = (campaignRows ?? []).map((c) => c.id);
+    if (campaignIds.length === 0) {
+      results.push({
+        sender: s.email, checked: messages.length,
+        matched_by_thread: 0, matched_by_from: 0,
+        skipped_auto: 0, skipped_bounce: 0, saved: 0, marked_replied: 0,
+      });
+      continue;
+    }
+
+    // Fetch recipients in this sender's campaigns (email + message_id both matter).
+    const { data: recipientsRows } = await db
+      .from("recipients")
+      .select("id, email, campaign_id, status, message_id")
+      .in("campaign_id", campaignIds)
+      .range(0, 99999);
+
+    // Two indexes: by message_id (authoritative — this is a genuine thread reply)
+    // and by email (fallback — used only when the reply also carries SOME
+    // In-Reply-To/References, which rules out unrelated mail from that address).
+    const byMsgId = new Map<string, { id: string; campaign_id: string; status: string }>();
+    const byEmail = new Map<string, { id: string; campaign_id: string; status: string }>();
+    for (const r of recipientsRows ?? []) {
+      const mid = normalizeMsgId(r.message_id);
+      if (mid && !byMsgId.has(mid)) {
+        byMsgId.set(mid, { id: r.id, campaign_id: r.campaign_id, status: r.status });
+      }
+      const lo = r.email.toLowerCase();
+      if (!byEmail.has(lo)) {
+        byEmail.set(lo, { id: r.id, campaign_id: r.campaign_id, status: r.status });
+      }
+    }
+
+    let savedCount = 0;
+    let matchedByThread = 0;
+    let matchedByFrom = 0;
+    let skippedAuto = 0;
+    let skippedBounce = 0;
+    const repliedRecipientIds = new Set<string>();
+
+    for (const msg of messages) {
+      // Skip bounces (mailer-daemon / DSNs) — those aren't from the recipient
+      // at all, so counting them as a "reply" is factually wrong. Everything
+      // else is kept, including auto-replies / OOO / vacation responders —
+      // the owner wants to see every inbound signal, not just "active" ones.
+      if (msg.is_bounce) { skippedBounce++; continue; }
+
+      // 1) Authoritative match: In-Reply-To / References contains one of our
+      //    outbound Message-IDs. Guaranteed genuine reply to our campaign.
+      let hit: { id: string; campaign_id: string; status: string } | undefined;
+      const candidateMsgIds = [
+        ...(msg.in_reply_to ? [msg.in_reply_to] : []),
+        ...msg.references,
+      ];
+      for (const mid of candidateMsgIds) {
+        const found = byMsgId.get(mid);
+        if (found) { hit = found; break; }
+      }
+      if (hit) matchedByThread++;
+
+      // 2) Fallback: from-address matches a recipient we sent to. Auto-replies
+      //    and bounces are already filtered above, so any remaining mail from
+      //    a recipient address is treated as a genuine reply. Not every email
+      //    client sets In-Reply-To/References reliably, and requiring threading
+      //    headers drops real replies from some webmail clients.
+      if (!hit) {
+        hit = byEmail.get(msg.from);
+        if (hit) matchedByFrom++;
+      }
+      if (!hit) continue;
+
+      const { error } = await db.from("replies").upsert(
+        {
+          recipient_id: hit.id,
+          campaign_id: hit.campaign_id,
+          user_id: s.user_id,
+          from_email: msg.from,
+          subject: msg.subject,
+          snippet: msg.snippet,
+          body_text: msg.body_text,
+          body_html: msg.body_html,
+          received_at: msg.date?.toISOString() ?? null,
+        },
+        { onConflict: "recipient_id,received_at" }
+      );
+      if (!error) savedCount++;
+
+      if (hit.status === "sent" || hit.status === "pending") {
+        repliedRecipientIds.add(hit.id);
+      }
+    }
+
+    let markedReplied = 0;
+    if (repliedRecipientIds.size > 0) {
+      const { data: updated, error: upErr } = await db
+        .from("recipients")
+        .update({
+          status: "replied",
+          replied_at: new Date().toISOString(),
+          next_follow_up_at: null,
+        })
+        .in("id", Array.from(repliedRecipientIds))
+        .select("id");
+      if (upErr) console.error("[check-replies] update failed:", upErr);
+      markedReplied = updated?.length ?? 0;
+    }
+
+    results.push({
+      sender: s.email,
+      checked: messages.length,
+      matched_by_thread: matchedByThread,
+      matched_by_from: matchedByFrom,
+      skipped_auto: skippedAuto,
+      skipped_bounce: skippedBounce,
+      saved: savedCount,
+      marked_replied: markedReplied,
+    });
+  }
+
+  return NextResponse.json({ status: "ok", results });
+}

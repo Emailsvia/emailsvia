@@ -1,0 +1,290 @@
+/*
+  Mail Automation — Notion-style design system.
+  Warm near-black on warm off-white, Inter everywhere, subtle borders,
+  hover as muted overlay, icons over emojis, 14px body, 1.5 line-height,
+  generous but not luxurious whitespace. Accent = Notion blue.
+*/
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Notion light — warm grays */
+    --c-paper: 255 255 255;
+    --c-surface: 247 246 243;   /* sidebar / panels */
+    --c-hover: 241 241 239;     /* row / button hover */
+
+    --c-ink: 55 53 47;          /* primary text — warm near-black */
+    --c-ink-950: 32 31 28;
+    --c-ink-900: 55 53 47;
+    --c-ink-800: 73 69 62;
+    --c-ink-700: 94 90 82;
+    --c-ink-600: 120 119 116;
+    --c-ink-500: 155 154 151;
+    --c-ink-400: 183 182 179;
+    --c-ink-300: 214 213 209;
+    --c-ink-200: 233 232 228;
+    --c-ink-100: 241 241 239;
+    --c-ink-50: 247 246 243;
+
+    /* Accent = ink — monochrome product */
+    --c-accent: 55 53 47;
+    --c-accent-50: 244 244 242;
+    --c-accent-100: 232 231 228;
+    --c-accent-600: 32 31 28;
+    --c-accent-700: 20 19 17;
+
+    --paper: var(--c-paper);
+    --ink: var(--c-ink);
+    --accent: var(--c-accent);
+  }
+
+  [data-theme="dark"] {
+    --c-paper: 25 25 25;
+    --c-surface: 32 32 32;
+    --c-hover: 45 45 45;
+
+    --c-ink: 255 255 255;
+    --c-ink-950: 255 255 255;
+    --c-ink-900: 240 240 240;
+    --c-ink-800: 225 225 225;
+    --c-ink-700: 210 210 210;
+    --c-ink-600: 185 185 185;
+    --c-ink-500: 160 160 162;
+    --c-ink-400: 135 135 138;
+    --c-ink-300: 95 95 98;
+    --c-ink-200: 65 65 68;
+    --c-ink-100: 48 48 50;
+    --c-ink-50: 34 34 36;
+
+    /* Accent = ink (white on dark) — monochrome product */
+    --c-accent: 255 255 255;
+    --c-accent-50: 45 45 47;
+    --c-accent-100: 55 55 58;
+    --c-accent-600: 230 230 230;
+    --c-accent-700: 210 210 210;
+  }
+
+  html, body { height: 100%; }
+
+  body {
+    @apply bg-paper text-ink font-sans antialiased;
+    font-size: 14px;
+    line-height: 1.5;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  ::selection { background-color: rgb(var(--c-accent) / 0.3); }
+
+  h1, h2, h3, h4, h5 {
+    @apply text-ink;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  hr { @apply border-ink-200; }
+
+  input, select, textarea, button { font-family: inherit; font-size: inherit; }
+  input::placeholder, textarea::placeholder { @apply text-ink-400; }
+
+  *:focus-visible {
+    outline: 2px solid rgb(var(--c-accent));
+    outline-offset: 1px;
+    border-radius: 3px;
+  }
+}
+
+@layer components {
+  /* ---------- typography patterns (neutralized — Notion doesn't do drama) ---------- */
+  .kicker        { @apply text-[12px] font-medium text-ink-500; }
+  .standfirst    { @apply text-[15px] leading-relaxed text-ink-600; }
+  .display-xl    { @apply text-[32px] font-bold leading-tight text-ink tracking-tight; }
+  .display-lg    { @apply text-[26px] font-bold leading-tight text-ink tracking-tight; }
+  .display-md    { @apply text-[18px] font-semibold leading-snug text-ink; }
+  .rule          { @apply border-t border-ink-200; }
+  .rule-thick    { @apply border-t border-ink-300; }
+
+  /* ---------- buttons ---------- */
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium
+      transition-all duration-150 ease-out-expo cursor-pointer select-none
+      disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-ink text-paper hover:bg-ink-800;
+  }
+  .btn-accent {
+    @apply btn bg-ink text-paper hover:bg-ink-800 border border-ink;
+  }
+  .btn-ghost {
+    @apply btn bg-transparent text-ink border border-ink-200 hover:bg-hover;
+  }
+  .btn-quiet {
+    @apply btn bg-transparent text-ink-700 hover:bg-hover hover:text-ink;
+  }
+  .btn-danger {
+    @apply btn bg-transparent text-red-600 hover:bg-red-50 hover:text-red-700;
+  }
+  .btn-link {
+    @apply inline-flex items-center gap-1 text-accent-600 hover:text-accent-700
+      hover:underline transition-colors duration-150 cursor-pointer;
+  }
+
+  /* ---------- inputs ---------- */
+  .field {
+    @apply w-full bg-transparent text-ink px-0 py-2 text-[14px]
+      border-0 border-b border-ink-200
+      focus:border-accent focus:ring-0 focus:outline-none
+      placeholder:text-ink-400
+      transition-colors duration-150;
+  }
+  .field-boxed {
+    @apply w-full bg-surface text-ink px-3 py-2 text-[14px]
+      border border-ink-200 rounded-md
+      focus:border-accent focus:bg-paper focus:ring-1 focus:ring-accent/20 focus:outline-none
+      placeholder:text-ink-400
+      transition-all duration-150;
+  }
+  .label-cap { @apply text-[12px] font-medium text-ink-600 mb-1.5 block; }
+
+  /* ---------- surfaces ---------- */
+  .sheet       { @apply bg-paper border border-ink-200 rounded-lg; }
+  .sheet-quiet { @apply bg-surface rounded-md; }
+  .masthead    { @apply flex items-center justify-between gap-4 pb-6 mb-6 border-b border-ink-200; }
+
+  /* ---------- pills (small status chips, Notion-style) ---------- */
+  .pill        { @apply inline-flex items-center gap-1 text-[12px] font-medium px-2 py-0.5 rounded; }
+  .pill-ink    { @apply pill bg-ink text-paper; }
+  .pill-paper  { @apply pill bg-ink-100 text-ink-700; }
+  .pill-live   { @apply pill bg-emerald-50 text-emerald-700; }
+  .pill-pause  { @apply pill bg-amber-50 text-amber-700; }
+  .pill-done   { @apply pill bg-ink-100 text-ink-600; }
+  .pill-draft  { @apply pill bg-ink-100 text-ink-500; }
+  .pill-warn   { @apply pill bg-red-50 text-red-700; }
+
+  /* ---------- indicator dots ---------- */
+  .dot         { @apply inline-block w-1.5 h-1.5 rounded-full; }
+  .dot-live    { @apply dot bg-emerald-500; }
+  .dot-pause   { @apply dot bg-amber-500; }
+  .dot-draft   { @apply dot bg-ink-400; }
+  .dot-done    { @apply dot bg-ink-500; }
+
+  /* ---------- scaffold ---------- */
+  .page        { @apply mx-auto max-w-5xl px-6 md:px-10 py-8 md:py-10; }
+  .page-narrow { @apply mx-auto max-w-2xl px-6 md:px-10 py-8 md:py-10; }
+
+  /* ---------- tabs ---------- */
+  .tab-group   { @apply inline-flex bg-surface border border-ink-200 rounded-md p-0.5 text-[13px]; }
+  .tab         { @apply px-2.5 py-1 rounded text-ink-600 cursor-pointer transition-colors duration-150; }
+  .tab-active  { @apply bg-paper text-ink shadow-sm; }
+
+  .dropcap::first-letter { @apply text-ink; }
+
+  /* ---------- sidebar ---------- */
+  .side-link {
+    @apply flex items-center gap-2 px-2 py-1.5 rounded text-[14px] text-ink-700
+      hover:bg-hover cursor-pointer transition-colors duration-150;
+  }
+  .side-link-active {
+    @apply bg-hover text-ink font-medium;
+  }
+
+  /* ---------- tiptap editor ---------- */
+  .tiptap-editor { @apply border border-ink-200 bg-paper rounded-md overflow-hidden; }
+  .tiptap-toolbar { @apply flex items-center gap-0 border-b border-ink-200 bg-surface px-1 py-1; }
+  .tiptap-area { @apply p-4 min-h-[360px] outline-none text-[14px] leading-[1.6] text-ink; }
+
+  /* legacy aliases */
+  .card  { @apply sheet p-5; }
+  .input { @apply field-boxed; }
+  .label { @apply label-cap; }
+}
+
+/* ---------- prose styles inside the tiptap editor ---------- */
+.tiptap-area.ProseMirror:focus { outline: none; }
+.tiptap-area.ProseMirror p { margin: 0 0 0.75em 0; }
+.tiptap-area.ProseMirror p:last-child { margin-bottom: 0; }
+.tiptap-area.ProseMirror strong { font-weight: 600; }
+.tiptap-area.ProseMirror em { font-style: italic; }
+.tiptap-area.ProseMirror s { text-decoration: line-through; color: rgb(var(--c-ink-500)); }
+.tiptap-area.ProseMirror a { color: rgb(var(--c-accent)); text-decoration: underline; text-decoration-color: rgb(var(--c-accent) / 0.4); text-underline-offset: 2px; }
+.tiptap-area.ProseMirror ul { list-style: disc; padding-left: 1.25em; margin: 0.3em 0 0.75em; }
+.tiptap-area.ProseMirror ol { list-style: decimal; padding-left: 1.25em; margin: 0.3em 0 0.75em; }
+.tiptap-area.ProseMirror h1 { font-size: 1.65em; font-weight: 700; letter-spacing: -0.01em; margin: 0.5em 0 0.3em; }
+.tiptap-area.ProseMirror h2 { font-size: 1.35em; font-weight: 600; margin: 0.6em 0 0.3em; }
+.tiptap-area.ProseMirror h3 { font-size: 1.15em; font-weight: 600; margin: 0.6em 0 0.3em; }
+.tiptap-area.ProseMirror code { background: rgb(var(--c-ink) / 0.08); padding: 1px 5px; border-radius: 3px; font-family: ui-monospace, monospace; font-size: 0.9em; color: rgb(var(--c-accent-700)); }
+.tiptap-area.ProseMirror blockquote { border-left: 3px solid rgb(var(--c-ink-300)); padding-left: 1em; margin: 0.6em 0; color: rgb(var(--c-ink-600)); }
+.tiptap-area.ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: rgb(var(--c-ink-400));
+  pointer-events: none;
+  float: left;
+  height: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+input[type="checkbox"] { accent-color: rgb(var(--c-accent)); }
+
+/* Email preview — force inner HTML to inherit the theme-aware wrapper color.
+   Inline color:#222 baked into the rendered template (for real email clients)
+   would otherwise leak into the preview and become invisible in dark mode. */
+.email-preview { color: rgb(var(--c-ink)); }
+.email-preview div,
+.email-preview p,
+.email-preview span,
+.email-preview strong,
+.email-preview em,
+.email-preview li { color: inherit !important; }
+.email-preview a { color: #3b82f6 !important; text-decoration: underline; }
+[data-theme="dark"] .email-preview a { color: #60a5fa !important; }
+
+/* Hide number input spinners */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+input[type="number"] { -moz-appearance: textfield; }
+
+/* Kill browser autofill yellow / off-color bg */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active,
+textarea:-webkit-autofill,
+select:-webkit-autofill {
+  -webkit-box-shadow: 0 0 0 1000px rgb(var(--c-paper)) inset !important;
+  -webkit-text-fill-color: rgb(var(--c-ink)) !important;
+  caret-color: rgb(var(--c-ink)) !important;
+  transition: background-color 9999s ease-in-out 0s;
+}
+[data-theme="dark"] input:-webkit-autofill,
+[data-theme="dark"] input:-webkit-autofill:hover,
+[data-theme="dark"] input:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0 1000px rgb(var(--c-surface)) inset !important;
+}
+
+/* Styled file input — hide default chrome and wrap in a button-like label */
+.file-dropzone {
+  @apply flex items-center justify-center gap-2 px-3 py-6 bg-surface border border-dashed border-ink-200 rounded-md
+    text-[13px] text-ink-600 hover:border-ink-300 hover:bg-hover cursor-pointer transition-colors;
+}
+.file-dropzone--filled {
+  @apply border-solid border-ink-300 bg-paper;
+}
+.file-dropzone input[type="file"] { @apply sr-only; }
+input[type="time"], input[type="date"], input[type="number"], input[type="datetime-local"] {
+  color-scheme: light;
+}
+[data-theme="dark"] input[type="time"],
+[data-theme="dark"] input[type="date"],
+[data-theme="dark"] input[type="number"],
+[data-theme="dark"] input[type="datetime-local"] {
+  color-scheme: dark;
+}

@@ -6,11 +6,19 @@ import { getUser } from "@/lib/auth-server";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const ConditionSchema = z.union([
+  z.object({ type: z.literal("always") }),
+  z.object({ type: z.literal("no_reply") }),
+  z.object({ type: z.literal("intent_in"), intents: z.array(z.string()).min(1) }),
+  z.object({ type: z.literal("intent_not_in"), intents: z.array(z.string()).min(1) }),
+]);
+
 const StepSchema = z.object({
   step_number: z.number().int().min(1).max(10),
   delay_days: z.number().min(0.5).max(60),
   subject: z.string().max(500).nullable().optional(),
   template: z.string().min(1),
+  condition: ConditionSchema.nullable().optional(),
 });
 
 const ReplaceSchema = z.object({
@@ -50,6 +58,7 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string 
     campaign_id: id,
     user_id: u.id,
     subject: s.subject ?? null,
+    condition: s.condition ?? null,
   }));
   const { data, error } = await db.from("follow_up_steps").insert(rows).select();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });

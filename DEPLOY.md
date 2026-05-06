@@ -2,15 +2,23 @@
 
 The codebase ships ready-to-deploy. This is the operational checklist for first-time prod launch.
 
-## 1. Apply migration 0011
+## 1. Apply migrations 0011 + 0012
 
-The new prod-hardening migration (Stripe webhook idempotency + recipients.message_id index + campaign_status_counts RPC) needs to be applied to the live Supabase project. Open the SQL Editor and paste:
+Two migrations need to land before the new code paths work:
 
+- `supabase/migrations/0011_prod_hardening.sql` — Stripe webhook idempotency, recipients.message_id index, campaign_status_counts RPC.
+- `supabase/migrations/0012_v2_features.sql` — sticky sender column, A/B variant columns, AI personalization cache, conditional follow-up condition column, webhooks tables, plan feature flag updates.
+
+Open the SQL Editor, paste each file, hit Run. Both are idempotent.
+
+Verify:
+```sql
+select count(*) from processed_stripe_events;          -- 0
+select count(*) from webhooks;                         -- 0
+select count(*) from ai_personalizations;              -- 0
+select count(*) from pg_indexes where indexname = 'recipients_message_id_idx'; -- 1
+select count(*) from pg_proc where proname = 'campaign_status_counts';         -- 1
 ```
-supabase/migrations/0011_prod_hardening.sql
-```
-
-Verify: `select count(*) from processed_stripe_events;` returns 0; `select count(*) from pg_indexes where indexname = 'recipients_message_id_idx';` returns 1.
 
 ## 2. Vercel project setup
 

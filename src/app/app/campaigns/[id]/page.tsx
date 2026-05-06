@@ -21,6 +21,9 @@ type Stats = {
   opens_by_weekday: number[];
   clicks_by_weekday: number[];
   timezone: string;
+  variants?: Array<{ id: string; sent: number; replied: number; reply_rate: number }> | null;
+  suggested_winner?: string | null;
+  current_winner?: string | null;
 };
 
 type Campaign = {
@@ -373,6 +376,16 @@ export default function CampaignDetail({ params }: { params: Promise<{ id: strin
 
       {campaign.tracking_enabled && stats && stats.opens > 0 && (
         <EngagementSection stats={stats} />
+      )}
+
+      {stats && stats.variants && stats.variants.length > 0 && (
+        <VariantPanel
+          campaignId={id}
+          variants={stats.variants}
+          currentWinner={stats.current_winner ?? null}
+          suggestedWinner={stats.suggested_winner ?? null}
+          onChange={() => loadStats()}
+        />
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr,320px] gap-10">
@@ -921,5 +934,105 @@ function WeekdayBars({ opens, clicks, peakIdx }: { opens: number[]; clicks: numb
         })}
       </div>
     </div>
+  );
+}
+
+function VariantPanel({
+  campaignId,
+  variants,
+  currentWinner,
+  suggestedWinner,
+  onChange,
+}: {
+  campaignId: string;
+  variants: Array<{ id: string; sent: number; replied: number; reply_rate: number }>;
+  currentWinner: string | null;
+  suggestedWinner: string | null;
+  onChange: () => void;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+
+  async function promote(variantId: string | null) {
+    setBusy(variantId ?? "clear");
+    try {
+      await fetch(`/api/campaigns/${campaignId}/promote-winner`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ variant_id: variantId }),
+      });
+      onChange();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <section className="sheet p-5 my-6">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <h3 className="text-[14px] font-semibold">A/B test breakdown</h3>
+          <p className="text-[12px] text-ink-500 mt-0.5">
+            Each row = one variant. Sent + reply rate per cohort.
+          </p>
+        </div>
+        {currentWinner && (
+          <button
+            type="button"
+            disabled={busy !== null}
+            onClick={() => promote(null)}
+            className="btn-quiet text-[12px]"
+          >
+            {busy === "clear" ? "Clearing…" : "Resume random pick"}
+          </button>
+        )}
+      </div>
+      {suggestedWinner && !currentWinner && (
+        <div className="mb-3 px-3 py-2 rounded-md text-[12px] bg-amber-50 text-amber-700 border border-amber-200">
+          Variant <b>{suggestedWinner}</b> is winning. Promote to send all
+          remaining recipients with that variant?
+        </div>
+      )}
+      <table className="w-full text-[13px]">
+        <thead>
+          <tr className="text-[11px] uppercase tracking-wide text-ink-500 text-left">
+            <th className="py-1.5 font-medium">Variant</th>
+            <th className="py-1.5 font-medium">Sent</th>
+            <th className="py-1.5 font-medium">Replied</th>
+            <th className="py-1.5 font-medium">Reply rate</th>
+            <th className="py-1.5 font-medium"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {variants.map((v) => (
+            <tr key={v.id} className="border-t border-ink-100">
+              <td className="py-1.5 font-medium">
+                {v.id}
+                {currentWinner === v.id && (
+                  <span className="ml-2 px-1.5 py-0.5 text-[10px] rounded bg-green-50 text-green-700">winner</span>
+                )}
+                {suggestedWinner === v.id && currentWinner !== v.id && (
+                  <span className="ml-2 px-1.5 py-0.5 text-[10px] rounded bg-amber-50 text-amber-700">leader</span>
+                )}
+              </td>
+              <td className="py-1.5 font-mono">{v.sent}</td>
+              <td className="py-1.5 font-mono">{v.replied}</td>
+              <td className="py-1.5 font-mono">{v.reply_rate}%</td>
+              <td className="py-1.5 text-right">
+                {currentWinner !== v.id && (
+                  <button
+                    type="button"
+                    disabled={busy !== null}
+                    onClick={() => promote(v.id)}
+                    className="btn-quiet text-[11px]"
+                  >
+                    {busy === v.id ? "Pinning…" : "Pin as winner"}
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
   );
 }

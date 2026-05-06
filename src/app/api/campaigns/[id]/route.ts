@@ -37,6 +37,14 @@ const PatchSchema = z.object({
   strict_merge: z.boolean().optional(),
   start_at: z.string().datetime().nullable().optional(),
   archived: z.boolean().optional(),
+  variants: z.array(z.object({
+    id: z.string().min(1).max(40),
+    weight: z.number().int().min(1).max(100).optional().default(1),
+    subject: z.string().min(1).max(500),
+    template: z.string().min(1),
+  })).min(2).max(4).nullable().optional(),
+  ab_winner_threshold: z.number().int().min(50).max(10000).nullable().optional(),
+  ab_winner_id: z.string().nullable().optional(),
 });
 
 // Cap on the recipients fetch returned by the campaign-detail page.

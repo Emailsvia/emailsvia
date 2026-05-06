@@ -12,7 +12,18 @@ import DateTimePicker from "@/components/DateTimePicker";
 
 type Sender = { id: string; label: string; email: string; from_name: string | null; is_default: boolean };
 type SampleRow = { name: string; company: string; email: string; vars: Record<string, string> };
-type FollowUpStep = { step_number: number; delay_days: number; subject: string | null; template: string };
+type FollowUpCondition =
+  | { type: "always" }
+  | { type: "no_reply" }
+  | { type: "intent_in"; intents: string[] }
+  | { type: "intent_not_in"; intents: string[] };
+type FollowUpStep = {
+  step_number: number;
+  delay_days: number;
+  subject: string | null;
+  template: string;
+  condition?: FollowUpCondition | null;
+};
 
 export type CampaignInitial = {
   id?: string;
@@ -603,13 +614,22 @@ export default function CampaignForm({
             )}
 
             {tab === "edit" ? (
-              <BodyEditor
-                ref={bodyEditorRef}
-                value={template}
-                onChange={setTemplate}
-                placeholder="Hi {{Name}}, …"
-                minHeight={420}
-              />
+              <>
+                <BodyEditor
+                  ref={bodyEditorRef}
+                  value={template}
+                  onChange={setTemplate}
+                  placeholder="Hi {{Name}}, …"
+                  minHeight={420}
+                />
+                {/\{\{\s*ai:/.test(template) && (
+                  <div className="mt-2 px-3 py-2 rounded-md text-[12px] bg-amber-50 text-amber-700 border border-amber-200">
+                    <b>AI tag detected.</b> Each <code className="font-mono">{`{{ai:...}}`}</code> calls
+                    Claude Haiku per recipient — Growth/Scale only. Free / Starter campaigns
+                    skip the AI step and the tag becomes empty text.
+                  </div>
+                )}
+              </>
             ) : (
               <div className="border border-ink-200 bg-paper rounded-md overflow-hidden">
                 <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-ink-200 bg-surface">
@@ -764,6 +784,53 @@ export default function CampaignForm({
                           placeholder="Hi {{Name}}, just bumping this up…"
                           minHeight={160}
                         />
+                      </div>
+                      <div className="md:col-span-2">
+                        <label className="label-cap">Send only when…</label>
+                        <select
+                          className="field-boxed text-[13px]"
+                          value={(s.condition?.type ?? "always")}
+                          onChange={(e) => {
+                            const t = e.target.value as FollowUpCondition["type"];
+                            const next: FollowUpCondition | null =
+                              t === "always" ? null :
+                              t === "no_reply" ? { type: "no_reply" } :
+                              t === "intent_in" ? { type: "intent_in", intents: ["interested"] } :
+                              { type: "intent_not_in", intents: ["unsubscribe"] };
+                            updateStep(i, { condition: next });
+                          }}
+                        >
+                          <option value="always">Always (default)</option>
+                          <option value="no_reply">Recipient hasn&rsquo;t replied yet</option>
+                          <option value="intent_in">Last reply intent matches…</option>
+                          <option value="intent_not_in">Last reply intent does NOT match…</option>
+                        </select>
+                        {(s.condition?.type === "intent_in" || s.condition?.type === "intent_not_in") && (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {(["interested", "question", "not_now", "unsubscribe", "ooo", "bounce", "other"] as const).map((intent) => {
+                              const cond = s.condition as { type: string; intents: string[] };
+                              const checked = cond.intents.includes(intent);
+                              return (
+                                <label key={intent} className={"text-[12px] px-2 py-0.5 rounded border cursor-pointer " + (checked ? "bg-ink text-paper border-ink" : "bg-surface text-ink-700 border-ink-200")}>
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={() => {
+                                      const next = checked
+                                        ? cond.intents.filter((x) => x !== intent)
+                                        : [...cond.intents, intent];
+                                      if (next.length > 0) {
+                                        updateStep(i, { condition: { ...cond, intents: next } as FollowUpCondition });
+                                      }
+                                    }}
+                                    className="sr-only"
+                                  />
+                                  {intent.replace("_", " ")}
+                                </label>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
 import { verifyToken } from "@/lib/tokens";
+import { dispatch as fireWebhook } from "@/lib/webhooks";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,6 +30,17 @@ async function process(token: string) {
     .update({ status: "unsubscribed", next_follow_up_at: null })
     .eq("user_id", r.user_id)
     .eq("email", r.email);
+  // Webhook event_id keyed on user+email (not recipient_id) so the same
+  // unsub across multiple campaigns of the same user fires once.
+  await fireWebhook(db, {
+    user_id: r.user_id,
+    event_type: "recipient.unsubscribed",
+    event_id: `unsub:${r.user_id}:${r.email}`,
+    payload: {
+      email: r.email,
+      campaign_id: r.campaign_id,
+    },
+  });
   return { ok: true };
 }
 

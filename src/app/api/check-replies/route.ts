@@ -9,6 +9,7 @@ import { classifyError } from "@/lib/errors";
 import { classifyReply } from "@/lib/triage";
 import { mapWithLimit } from "@/lib/email-validator";
 import { markSenderRevoked } from "@/lib/sender-revoke";
+import { dispatch as fireWebhook } from "@/lib/webhooks";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -269,6 +270,24 @@ async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<Ne
           body: msg.body_text,
         });
       }
+      // Fire reply.received webhook (idempotent on reply.id — webhooks
+      // table has UNIQUE(webhook_id, event_id), so retry-safe).
+      if (savedRow) {
+        await fireWebhook(db, {
+          user_id: s.user_id,
+          event_type: "reply.received",
+          event_id: savedRow.id,
+          payload: {
+            reply_id: savedRow.id,
+            campaign_id: hit.campaign_id,
+            recipient_id: hit.id,
+            from_email: msg.from,
+            subject: msg.subject,
+            snippet: msg.snippet,
+            received_at: msg.date?.toISOString() ?? null,
+          },
+        });
+      }
 
       if (hit.status === "sent" || hit.status === "pending") {
         repliedRecipientIds.add(hit.id);
@@ -340,6 +359,21 @@ async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<Ne
           .from("replies")
           .update({ intent: out.intent, intent_confidence: out.confidence })
           .eq("id", p.reply_id);
+        if (!error) {
+          // Fire reply.classified webhook with the same event_id pattern
+          // ("classified:<reply_id>") so it's distinct from the earlier
+          // reply.received delivery.
+          await fireWebhook(db, {
+            user_id: p.user_id,
+            event_type: "reply.classified",
+            event_id: `classified:${p.reply_id}`,
+            payload: {
+              reply_id: p.reply_id,
+              intent: out.intent,
+              confidence: out.confidence,
+            },
+          });
+        }
         return { id: p.reply_id, written: !error };
       });
       triageRan = outcomes.filter((o) => o.written).length;

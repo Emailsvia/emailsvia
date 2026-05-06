@@ -8,9 +8,18 @@ import { signToken, appUrl, cronBearerOk } from "@/lib/tokens";
 import { downloadAttachment } from "@/lib/attachment";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { warmupCapForSender } from "@/lib/warmup";
-import { assertCanSend, incrementUsage, type Plan } from "@/lib/billing";
+import { assertCanSend, incrementUsage, hasFeature, type Plan } from "@/lib/billing";
 import { classifyError } from "@/lib/errors";
 import { markSenderRevoked } from "@/lib/sender-revoke";
+import { isVariantArray, pickVariant, type Variant } from "@/lib/variants";
+import { personalizeTemplate } from "@/lib/personalize";
+import {
+  fetchReplyContext,
+  nextEligibleStep,
+  type Condition,
+  type FollowUpStep as ConditionalStep,
+} from "@/lib/follow-up-condition";
+import { dispatch as fireWebhook } from "@/lib/webhooks";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -227,6 +236,9 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
 
   let sender: SenderCreds | null = null;
   let chosenSenderId: string | null = null;
+  // Eligible-sender pool (for sticky-sender lookup once we know the
+  // recipient). Empty in single-sender mode.
+  const eligiblePool = new Map<string, SenderRow>();
 
   const { data: rotationRows } = await db
     .from("campaign_senders")
@@ -267,6 +279,7 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
       );
       if (sentToday >= cap) continue;
       eligible.push({ row: s, sentToday, cap });
+      eligiblePool.set(s.id, s);
     }
     if (eligible.length === 0) {
       return NextResponse.json({
@@ -301,6 +314,7 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
       }
       sender = toSenderCreds(row);
       chosenSenderId = row.id;
+      eligiblePool.set(row.id, row);
     }
   }
 
@@ -382,9 +396,35 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
       .eq("status", "pending");
     if ((upcoming ?? 0) === 0 && (pendingRetries ?? 0) === 0) {
       await db.from("campaigns").update({ status: "done" }).eq("id", campaign.id);
+      await fireWebhook(db, {
+        user_id: campaign.user_id,
+        event_type: "campaign.finished",
+        event_id: `finished:${campaign.id}`,
+        payload: {
+          campaign_id: campaign.id,
+          name: campaign.name,
+          finished_at: nowIso,
+        },
+      });
       return NextResponse.json({ status: "campaign_finished", campaign: campaign.name });
     }
     return NextResponse.json({ status: "waiting", upcoming_follow_ups: upcoming ?? 0 });
+  }
+
+  // Sticky-sender override: if the recipient already has a sender_id
+  // (set on its first send under rotation), prefer it so follow-ups
+  // come from the same from-line they saw originally. Falls back to the
+  // already-picked default if the sticky sender is no longer eligible
+  // (revoked, warmup-capped, removed from rotation).
+  if (recipient.sender_id && recipient.sender_id !== chosenSenderId) {
+    const sticky = eligiblePool.get(recipient.sender_id);
+    if (sticky) {
+      const candidate = toSenderCreds(sticky);
+      if (candidate) {
+        sender = candidate;
+        chosenSenderId = sticky.id;
+      }
+    }
   }
 
   // skip if this user has unsubscribed this address (per-user list)
@@ -431,12 +471,56 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
   // one the thread was opened with). A step-level subject override doesn't
   // change whether this is a reply to the original thread.
   const threadSubject = campaign.subject;
-  const rawSubject = kind === "follow_up" && step.subject ? step.subject : campaign.subject;
+
+  // ---- A/B variant pick (initial / retry sends only) ----
+  // Follow-ups inherit the recipient's pinned variant via recipients.variant_id;
+  // they don't re-roll. If the campaign has variants and the recipient has
+  // no pin yet, we pick now and persist on success.
+  let effectiveSubject: string = campaign.subject;
+  let effectiveTemplate: string = campaign.template;
+  let pickedVariantId: string | null = recipient.variant_id ?? null;
+  if (kind !== "follow_up" && isVariantArray(campaign.variants)) {
+    const variants = campaign.variants as Variant[];
+    const sticky = pickedVariantId
+      ? variants.find((v) => v.id === pickedVariantId) ?? null
+      : null;
+    const chosen = sticky ?? pickVariant(variants, campaign.ab_winner_id ?? null);
+    if (chosen) {
+      effectiveSubject = chosen.subject;
+      effectiveTemplate = chosen.template;
+      pickedVariantId = chosen.id;
+    }
+  }
+
+  const rawSubjectPreAi = kind === "follow_up" && step.subject ? step.subject : effectiveSubject;
+  const templateSrcPreAi = kind === "follow_up" ? step.template : effectiveTemplate;
+
+  // ---- AI personalization ({{ai:...}} tags) ----
+  // Plan-gated. Free / Starter users with AI tags in their template get
+  // them silently expanded to empty string (the strict_merge gate above
+  // doesn't see {{ai:...}} as a missing merge tag because the ai: prefix
+  // is excluded from extractTags).
+  const planForUser = planByUser.get(campaign.user_id);
+  const aiEnabled = planForUser ? hasFeature(planForUser, "ai_personalization") : false;
+  const personalizedBody = await personalizeTemplate(templateSrcPreAi, vars, {
+    db,
+    recipient_id: recipient.id,
+    user_id: campaign.user_id,
+    enabled: aiEnabled,
+  });
+  const personalizedSubject = await personalizeTemplate(rawSubjectPreAi, vars, {
+    db,
+    recipient_id: recipient.id,
+    user_id: campaign.user_id,
+    enabled: aiEnabled,
+  });
+  const rawSubject = personalizedSubject.rendered;
+  const templateSrc = personalizedBody.rendered;
+
   const subject =
     kind === "follow_up" && recipient.message_id && !/^re:\s/i.test(threadSubject)
       ? `Re: ${rawSubject.replace(/^re:\s*/i, "")}`
       : rawSubject;
-  const templateSrc = kind === "follow_up" ? step.template : campaign.template;
 
   // Hard-fail merge validation. If strict_merge is on and the template
   // references a tag that resolves empty for this row, skip without
@@ -495,10 +579,9 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
     : undefined;
 
   // Free-tier watermark: appended to body (HTML + plain) at the same site
-  // as the unsubscribe footer / tracking pixel. Plan was already cached in
-  // the gate loop above, so this is free.
-  const plan = planByUser.get(campaign.user_id);
-  const watermark = !!plan?.watermark;
+  // as the unsubscribe footer / tracking pixel. Plan was already resolved
+  // in the AI-personalization step above (planForUser).
+  const watermark = !!planForUser?.watermark;
   const html = toHtml(body, { wrapUrl, openPixelUrl, unsubscribeUrl: unsubUrl, watermark });
   const text = toPlain(body, { unsubscribeUrl: unsubUrl, watermark });
 
@@ -632,29 +715,35 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
     if (sentMessageId && !recipient.message_id) {
       update.message_id = sentMessageId.startsWith("<") ? sentMessageId : `<${sentMessageId}>`;
     }
-    // schedule first follow-up if enabled
+    // Sticky-sender pin: record which sender ran the initial so future
+    // follow-ups land from the same from-line. Only set on initial; if
+    // the row already has a sender_id we don't overwrite (a later
+    // rotation re-pin would confuse the recipient).
+    if (kind === "initial" && chosenSenderId && !recipient.sender_id) {
+      update.sender_id = chosenSenderId;
+    }
+    // A/B variant pin — same logic. If the campaign uses variants and
+    // this is the first send, record which variant the recipient saw
+    // so follow-ups (and stats) can attribute correctly.
+    if (kind === "initial" && pickedVariantId && !recipient.variant_id) {
+      update.variant_id = pickedVariantId;
+    }
+    // Schedule first follow-up if enabled, honouring per-step conditions.
+    // Conditional steps may skip ahead (eg "only if no_reply") — we walk
+    // the sequence and pick the first eligible step.
     if (campaign.follow_ups_enabled) {
-      const { data: firstStep } = await db
-        .from("follow_up_steps")
-        .select("delay_days")
-        .eq("campaign_id", campaign.id)
-        .eq("step_number", 1)
-        .maybeSingle();
-      if (firstStep) {
-        const next = new Date(now.getTime() + firstStep.delay_days * 86400 * 1000);
-        update.next_follow_up_at = next.toISOString();
-      }
+      const nextTs = await scheduleNextFollowUp(db, campaign.id, recipient.id, 1, now);
+      if (nextTs) update.next_follow_up_at = nextTs;
     }
     await db.from("recipients").update(update).eq("id", recipient.id);
   } else if (kind === "follow_up") {
-    const nextStepNumber = recipient.follow_up_count + 2; // already sent this one, look for the next
-    const { data: nextStep } = await db
-      .from("follow_up_steps")
-      .select("delay_days")
-      .eq("campaign_id", campaign.id)
-      .eq("step_number", nextStepNumber)
-      .maybeSingle();
-    const nextTs = nextStep ? new Date(now.getTime() + nextStep.delay_days * 86400 * 1000).toISOString() : null;
+    const nextTs = await scheduleNextFollowUp(
+      db,
+      campaign.id,
+      recipient.id,
+      recipient.follow_up_count + 2,
+      now
+    );
     await db
       .from("recipients")
       .update({
@@ -689,4 +778,29 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
     campaign: campaign.name,
     sent_today: (todayCount ?? 0) + 1,
   });
+}
+
+// Schedule the next eligible follow-up for `recipient_id`, starting from
+// `fromStep`. Walks the user's full sequence and picks the first step
+// whose `condition` matches the recipient's current reply state. Returns
+// the ISO timestamp to set on `next_follow_up_at`, or null when no
+// remaining step applies (e.g. all gated by "no_reply" but they replied).
+async function scheduleNextFollowUp(
+  db: ReturnType<typeof supabaseAdmin>,
+  campaignId: string,
+  recipientId: string,
+  fromStep: number,
+  now: Date
+): Promise<string | null> {
+  const { data: stepsRaw } = await db
+    .from("follow_up_steps")
+    .select("step_number, delay_days, subject, template, condition")
+    .eq("campaign_id", campaignId)
+    .order("step_number", { ascending: true });
+  const steps = (stepsRaw ?? []) as ConditionalStep[];
+  if (steps.length === 0) return null;
+  const ctx = await fetchReplyContext(db, recipientId);
+  const next = nextEligibleStep(steps, fromStep, ctx);
+  if (!next) return null;
+  return new Date(now.getTime() + next.delayDays * 86_400_000).toISOString();
 }

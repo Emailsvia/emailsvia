@@ -20,6 +20,10 @@ export type Plan = {
 export type PlanFeatures = {
   follow_ups?: boolean;
   ai?: boolean;
+  ai_personalization?: boolean;
+  conditional_sequences?: boolean;
+  webhooks?: boolean;
+  sticky_sender?: boolean;
   import_row_limit?: number | null;
   a_b_testing?: boolean;
   inbox_rotation?: boolean;

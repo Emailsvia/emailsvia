@@ -13,6 +13,7 @@ const NAV = [
   { href: "/app/senders", label: "Senders", icon: MailIcon },
   { href: "/app/billing", label: "Billing", icon: BillingIcon },
   { href: "/app/keys", label: "API keys", icon: KeyIcon },
+  { href: "/app/webhooks", label: "Webhooks", icon: WebhookIcon },
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
@@ -171,6 +172,14 @@ function KeyIcon() {
     <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="8" cy="15" r="4" />
       <path d="M10.85 12.15L19 4M18 7l3 3M15 10l3 3" />
+    </svg>
+  );
+}
+
+function WebhookIcon() {
+  return (
+    <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 16.08c-.76 0-1.44.3-1.96.77l-7.13-4.15c.05-.21.09-.42.09-.65s-.04-.44-.09-.65l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .23.04.44.09.65l-7.05 4.11C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.2-.08.41-.08.62 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.91-2.92-2.91z" />
     </svg>
   );
 }

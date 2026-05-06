@@ -89,13 +89,20 @@ Then fill in `.env.local`:
 | `SUPABASE_URL` | Supabase → Project Settings → API → **Project URL** |
 | `SUPABASE_ANON_KEY` | Supabase → Project Settings → API → **anon/public key** |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase → Project Settings → API → **service_role key** (keep secret!) |
-| `GMAIL_ADDRESS` | Your Gmail address (fallback sender) |
-| `GMAIL_APP_PASSWORD` | The 16-char app password from step 4 |
-| `GMAIL_FROM_NAME` | Display name (e.g. `Jane Doe`) |
-| `APP_PASSWORD` | Anything you want — this is the login password for the EmailsVia UI |
-| `SESSION_SECRET` | Run `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` → paste output |
-| `CRON_SECRET` | Same as above — different random hex string |
-| `APP_URL` | `http://localhost:3000` for local dev. Change to your Vercel URL in production. |
+| `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` | Google Cloud Console → OAuth client (used by Supabase sign-in + sender Gmail OAuth) |
+| `ENCRYPTION_SECRET` | Run `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` → paste output. Used for AES-GCM encryption of sender creds + HMAC-signed tracking tokens |
+| `CRON_SECRET` | Same as above — different random hex string. Bearer token for `/api/tick`, `/api/check-replies`, `/api/cron/refresh-tokens` |
+| `APP_URL` | `http://localhost:3000` for local dev. Change to your Vercel URL in production |
+
+Optional (paid features go silently no-op without these):
+
+| Variable | Purpose |
+|---|---|
+| `STRIPE_SECRET_KEY` / `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` / `STRIPE_WEBHOOK_SECRET` / `STRIPE_PRICE_*` | Billing — without these the dev billing page falls back to a "switch plan in dev mode" shortcut |
+| `ANTHROPIC_API_KEY` | AI reply triage + AI personalization (Growth/Scale only) |
+| `POSTMARK_SERVER_TOKEN` + `POSTMARK_FROM_EMAIL` | Sender-revoked + payment-failed notification emails |
+| `NEXT_PUBLIC_SENTRY_DSN` | Server + client error reporting |
+| `ADMIN_USER_IDS` | Comma-separated `auth.users.id` values that can access `/app/admin` |
 
 ### 6. Run locally
 
@@ -103,12 +110,15 @@ Then fill in `.env.local`:
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000), log in with your `APP_PASSWORD`. You should land on an empty campaigns dashboard.
+Open [http://localhost:3000](http://localhost:3000) → click **Get Started** → sign in with Google (or email + password). You'll land on the empty campaigns dashboard at `/app`.
 
 **Quick smoke test:**
-1. **Senders** → Add your Gmail address + app password → Save
-2. **New campaign** → Fill in a name + subject + body, upload a recipient list (CSV or Google Sheets URL)
-3. Send a test email to yourself before hitting Start.
+1. **Senders** → **Connect Gmail** → consent → see "Connected" toast
+2. **New campaign** → Fill in name + subject + body, upload a recipient list (CSV or Google Sheets URL)
+3. Send a test email to yourself before hitting Start
+4. Hit Run, then click **Run tick** (dev-mode button) to send the next recipient immediately
+
+The dev server also runs an in-process scheduler that hits `/api/tick` every minute and `/api/check-replies` every 5 min — same cadence as production cron — so campaigns auto-progress without manual ticks.
 
 ---
 
@@ -154,17 +164,15 @@ order by created desc limit 5;
 
 If you see `404 DEPLOYMENT_NOT_FOUND` → `app_url` is wrong. If `401` → `cron_secret` doesn't match `CRON_SECRET` env var on Vercel.
 
-### 10. Enable reply detection (optional)
+### 10. Reply detection
 
-If you want EmailsVia to detect replies automatically:
-- Nothing extra needed if Gmail uses the same `GMAIL_ADDRESS` + `GMAIL_APP_PASSWORD` as the sender. The `check-replies` cron already polls IMAP with those creds.
-- Replies will appear on the campaign page and auto-flip matching recipients to `replied` status (stops follow-ups).
+Reply detection is automatic — the `/api/check-replies` cron runs every 5 min, polls each connected sender's inbox (Gmail API for OAuth senders, IMAP for app-password senders), correlates inbound messages back to your campaigns, and flips matched recipients to `replied`. AI intent classification (Growth/Scale) runs in the same pass.
 
 ---
 
 ## First campaign
 
-1. **Senders** (top right) → add at least one Gmail sender (optional — if not, the fallback env Gmail is used)
+1. **Senders** → **Connect Gmail** (OAuth) or **Use app password** (legacy fallback) — every campaign requires at least one sender attached
 2. **New campaign**
    - **Recipients**: either paste a Google Sheets URL (sharing: Anyone with link → Viewer) or upload `.csv/.xlsx`. First row = column headers. Must include `Name`, `Company`, `Email` columns. Any other column becomes a `{{merge_tag}}`.
    - **Subject**: e.g. `Hi {{Name}} — quick question about {{Company}}`
@@ -251,11 +259,12 @@ supabase/
 
 ## Security notes
 
-- The server uses `SUPABASE_SERVICE_ROLE_KEY`, which bypasses RLS. RLS is still enabled on every table as defense-in-depth.
-- Gmail app passwords are encrypted with AES-GCM using a key derived from `SESSION_SECRET`. Never commit `.env.local`.
-- HMAC-signed tokens (unsubscribe, tracking pixel, click redirect) prevent tampering.
-- The cron endpoint uses constant-time secret comparison (`crypto.timingSafeEqual`).
-- `APP_PASSWORD` is for the single UI login — pick something strong.
+- Auth is **Supabase Auth** (email + password and Google OAuth). Sessions are JWT cookies managed by `@supabase/ssr` — no homegrown session crypto.
+- User-facing API handlers go through `supabaseUser()` (anon key + cookie) so **RLS engages**. The service-role client (`supabaseAdmin()`) bypasses RLS and is reserved for cron + tracking pixels + Stripe webhook.
+- Sender Gmail credentials (app passwords, OAuth refresh tokens) are encrypted at rest with AES-GCM using `ENCRYPTION_SECRET`. Never commit `.env.local`.
+- HMAC-signed tokens (unsubscribe, tracking pixel, click redirect, OAuth state) prevent tampering. Cron + webhook signatures use `crypto.timingSafeEqual` for constant-time comparison.
+- Reply HTML rendered with `isomorphic-dompurify` — inbound mail is attacker-controlled.
+- A `/auth/callback` open-redirect protection rejects protocol-relative + non-slash `next` values.
 
 ---
 

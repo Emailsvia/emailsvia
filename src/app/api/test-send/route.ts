@@ -127,6 +127,13 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  if (!sender) {
+    return NextResponse.json(
+      { error: "no_sender", message: "Pick a sender (or connect one in /app/senders) before sending a test." },
+      { status: 400 }
+    );
+  }
+
   const vars = parsed.data.vars ?? { Name: "Test", Company: "Your Company" };
   const subject = `[TEST] ${render(parsed.data.subject, vars)}`;
   const rendered = render(parsed.data.template, vars);

@@ -618,6 +618,16 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
   }
 
   // ---- send ----
+  // sender is null only if the campaign has no sender_id AND no rotation.
+  // We bail with a status the operator can act on, rather than mailing
+  // from anywhere unexpected.
+  if (!sender) {
+    return NextResponse.json({
+      status: "no_sender_configured",
+      campaign: campaign.name,
+      message: "Campaign has no sender attached. Pick one on /app/senders or in the campaign editor.",
+    });
+  }
   let sentMessageId: string | null = null;
   try {
     const result = await sendMail({ to: recipient.email, subject, text, html, sender, attachments, headers });

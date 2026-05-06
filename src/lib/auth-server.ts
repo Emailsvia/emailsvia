@@ -12,8 +12,7 @@ export async function getUser(): Promise<AuthedUser | null> {
 }
 
 // Throws a 401 Response when the request is unauthenticated. Use in API
-// routes that already throw to short-circuit on auth failure (matches the
-// old requireAuth() ergonomics).
+// routes that already throw to short-circuit on auth failure.
 export async function requireUser(): Promise<AuthedUser> {
   const u = await getUser();
   if (!u) throw new Response("unauthorized", { status: 401 });

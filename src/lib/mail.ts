@@ -21,19 +21,11 @@ export type OAuthSender = {
 
 export type SenderCreds = AppPasswordSender | OAuthSender;
 
-function fallbackEnv(): AppPasswordSender {
-  const email = process.env.GMAIL_ADDRESS;
-  const appPassword = process.env.GMAIL_APP_PASSWORD?.replace(/\s+/g, "");
-  if (!email || !appPassword) {
-    throw new Error("No sender configured and GMAIL_ADDRESS/GMAIL_APP_PASSWORD not set");
-  }
-  return {
-    authMethod: "app_password",
-    email,
-    appPassword,
-    fromName: process.env.GMAIL_FROM_NAME,
-  };
-}
+// (Removed: legacy GMAIL_ADDRESS/GMAIL_APP_PASSWORD env-fallback sender.
+//  Single-tenant artifact — would have routed every campaign without a
+//  sender_id from the operator's personal Gmail. Multi-tenant now: every
+//  campaign MUST have a sender_id, and callers MUST resolve a SenderCreds
+//  object before calling sendMail().)
 
 const cache = new Map<string, nodemailer.Transporter>();
 
@@ -80,11 +72,11 @@ export async function sendMail(args: {
   subject: string;
   text: string;
   html: string;
-  sender?: SenderCreds | null;
+  sender: SenderCreds;
   attachments?: { filename: string; content: Buffer; contentType?: string }[];
   headers?: Record<string, string>;
 }): Promise<SendResult> {
-  const creds = args.sender ?? fallbackEnv();
+  const creds = args.sender;
 
   if (creds.authMethod === "oauth") {
     const oauthCreds: GmailOAuthCreds = {

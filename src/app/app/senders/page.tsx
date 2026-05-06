@@ -168,7 +168,7 @@ export default function SendersPage() {
               </div>
               <div>
                 <label className="label-cap">Display name</label>
-                <input className="field-boxed" placeholder="Nishant Raj" value={form.from_name} onChange={(e) => setForm({ ...form, from_name: e.target.value })} />
+                <input className="field-boxed" placeholder="Your full name" value={form.from_name} onChange={(e) => setForm({ ...form, from_name: e.target.value })} />
               </div>
               <div>
                 <label className="label-cap">Gmail address</label>
@@ -245,7 +245,7 @@ export default function SendersPage() {
                           className="field-boxed"
                           value={editForm.from_name}
                           onChange={(e) => setEditForm({ ...editForm, from_name: e.target.value })}
-                          placeholder="Nishant Raj"
+                          placeholder="Your full name"
                         />
                       </div>
                     </div>

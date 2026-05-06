@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import PageHeader from "@/components/app/PageHeader";
+import StatusPill from "@/components/app/StatusPill";
 
 type AdminSender = {
   id: string;
@@ -15,6 +17,12 @@ type AdminSender = {
   created_at: string;
   owner_email: string | null;
   sends_24h: number;
+};
+
+const OAUTH_TONE: Record<string, string> = {
+  ok:      "ok",
+  pending: "pending",
+  revoked: "revoked",
 };
 
 export default function AdminSendersPage() {
@@ -45,27 +53,30 @@ export default function AdminSendersPage() {
   });
 
   return (
-    <div className="page-narrow">
-      <div className="flex items-baseline justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-[28px] font-bold tracking-tight">Senders</h1>
-          <p className="text-[13px] text-ink-500 mt-1">
-            All connected sender accounts. Watch for revoked OAuth.
-          </p>
-        </div>
-      </div>
+    <div className="page">
+      <PageHeader
+        eyebrow="Operator"
+        title="Senders"
+        subtitle="All connected sender accounts. Watch for revoked OAuth — campaigns silently die without it."
+      />
 
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="search email / label / owner"
-          className="field-boxed flex-1 min-w-[200px]"
-        />
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <div className="relative flex-1 min-w-[200px]">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-ink-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" aria-hidden>
+            <circle cx="11" cy="11" r="7" />
+            <path d="M21 21l-4-4" />
+          </svg>
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="search email / label / owner"
+            className="w-full bg-surface border border-ink-200 rounded-md pl-8 pr-3 py-1.5 text-[13px] text-ink placeholder:text-ink-400 outline-none focus:border-ink-300 transition-colors"
+          />
+        </div>
         <select
           value={auth}
           onChange={(e) => setAuth(e.target.value as typeof auth)}
-          className="field-boxed"
+          className="bg-surface border border-ink-200 rounded-md px-2.5 py-1.5 text-[13px] text-ink outline-none focus:border-ink-300 cursor-pointer"
         >
           <option value="">All auth methods</option>
           <option value="oauth">OAuth</option>
@@ -74,7 +85,7 @@ export default function AdminSendersPage() {
         <select
           value={oauthStatus}
           onChange={(e) => setOauthStatus(e.target.value as typeof oauthStatus)}
-          className="field-boxed"
+          className="bg-surface border border-ink-200 rounded-md px-2.5 py-1.5 text-[13px] text-ink outline-none focus:border-ink-300 cursor-pointer"
         >
           <option value="">All OAuth states</option>
           <option value="ok">OK</option>
@@ -83,77 +94,95 @@ export default function AdminSendersPage() {
         </select>
       </div>
 
-      <div className="mt-3 text-[12px] text-ink-500">
+      <div className="font-mono text-[11.5px] text-ink-500 mb-3">
         {data ? `${filtered.length.toLocaleString()} senders` : "Loading…"}
       </div>
 
-      <div className="sheet mt-3 overflow-x-auto">
-        <table className="w-full text-[13px]">
-          <thead>
-            <tr className="text-[12px] text-ink-500 text-left bg-paper">
-              <th className="py-2 px-3 font-medium">Owner</th>
-              <th className="py-2 px-3 font-medium">Sender</th>
-              <th className="py-2 px-3 font-medium">Auth</th>
-              <th className="py-2 px-3 font-medium">OAuth</th>
-              <th className="py-2 px-3 font-medium text-right">Sends · 24h</th>
-              <th className="py-2 px-3 font-medium">Connected</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((s) => (
-              <tr key={s.id} className="border-t border-ink-100">
-                <td className="py-1.5 px-3">
-                  <Link
-                    href={`/admin/users/${s.user_id}`}
-                    className="hover:underline"
-                  >
-                    {s.owner_email ?? (
-                      <span className="font-mono text-[11px]">
-                        {s.user_id.slice(0, 8)}
-                      </span>
-                    )}
-                  </Link>
-                </td>
-                <td className="py-1.5 px-3">
-                  <div className="truncate max-w-[260px]">
-                    <span className="font-medium">{s.label}</span>
-                  </div>
-                  <div className="text-[11px] text-ink-500 truncate max-w-[260px]">
-                    {s.email}
-                  </div>
-                </td>
-                <td className="py-1.5 px-3 capitalize">{s.auth_method}</td>
-                <td className="py-1.5 px-3">
-                  {s.auth_method === "oauth" ? (
-                    <span
-                      className={
-                        s.oauth_status === "ok"
-                          ? "text-emerald-700"
-                          : s.oauth_status === "pending"
-                            ? "text-amber-700"
-                            : "text-red-700"
-                      }
-                    >
-                      {s.oauth_status}
-                    </span>
-                  ) : (
-                    <span className="text-ink-500">—</span>
-                  )}
-                </td>
-                <td className="py-1.5 px-3 text-right font-mono">
-                  {s.sends_24h.toLocaleString()}
-                </td>
-                <td className="py-1.5 px-3 text-[11px] text-ink-500">
-                  {new Date(s.created_at).toLocaleDateString()}
-                </td>
+      {data === null ? (
+        <SkeletonTable />
+      ) : (
+        <div className="rounded-xl border border-ink-200 bg-paper overflow-x-auto">
+          <table className="w-full text-[13px]">
+            <thead>
+              <tr className="text-left bg-surface border-b border-ink-200">
+                <ColHead>Owner</ColHead>
+                <ColHead>Sender</ColHead>
+                <ColHead>Auth</ColHead>
+                <ColHead>OAuth</ColHead>
+                <ColHead className="text-right">Sends · 24h</ColHead>
+                <ColHead>Connected</ColHead>
               </tr>
-            ))}
-          </tbody>
-        </table>
-        {data && filtered.length === 0 && (
-          <p className="py-6 text-center text-[13px] text-ink-500">No senders.</p>
-        )}
-      </div>
+            </thead>
+            <tbody>
+              {filtered.map((s, i) => (
+                <tr
+                  key={s.id}
+                  className={`hover:bg-hover transition-colors ${i < filtered.length - 1 ? "border-b border-ink-100" : ""}`}
+                >
+                  <td className="py-2.5 px-3">
+                    <Link
+                      href={`/admin/users/${s.user_id}`}
+                      className="text-ink hover:text-[rgb(255_140_140)] transition-colors"
+                    >
+                      {s.owner_email ?? <span className="font-mono text-[11.5px] text-ink-500">{s.user_id.slice(0, 8)}</span>}
+                    </Link>
+                  </td>
+                  <td className="py-2.5 px-3">
+                    <div className="text-ink font-medium truncate max-w-[260px]">{s.label}</div>
+                    <div className="font-mono text-[11.5px] text-ink-500 truncate max-w-[260px]">{s.email}</div>
+                  </td>
+                  <td className="py-2.5 px-3">
+                    <span className="font-mono text-[11.5px] uppercase tracking-wider text-ink-700">
+                      {s.auth_method}
+                    </span>
+                  </td>
+                  <td className="py-2.5 px-3">
+                    {s.auth_method === "oauth" ? (
+                      <StatusPill status={OAUTH_TONE[s.oauth_status] ?? "draft"} />
+                    ) : (
+                      <span className="text-ink-400 font-mono text-[11.5px]">—</span>
+                    )}
+                  </td>
+                  <td className="py-2.5 px-3 text-right font-mono text-ink tabular-nums">
+                    {s.sends_24h.toLocaleString()}
+                  </td>
+                  <td className="py-2.5 px-3 font-mono text-[11.5px] text-ink-500">
+                    {new Date(s.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {filtered.length === 0 && (
+            <p className="py-10 text-center text-[13px] text-ink-500">No senders match.</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ColHead({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return (
+    <th className={`font-mono text-[10.5px] uppercase tracking-wider text-ink-500 font-medium py-2.5 px-3 ${className}`}>
+      {children}
+    </th>
+  );
+}
+
+function SkeletonTable() {
+  return (
+    <div className="rounded-xl border border-ink-200 bg-paper overflow-hidden">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <div
+          key={i}
+          className={`grid grid-cols-6 gap-3 items-center px-3 py-2.5 ${i < 5 ? "border-b border-ink-100" : ""}`}
+        >
+          {Array.from({ length: 6 }).map((__, j) => (
+            <div key={j} className="h-3 rounded bg-ink-100 animate-pulse" />
+          ))}
+        </div>
+      ))}
     </div>
   );
 }

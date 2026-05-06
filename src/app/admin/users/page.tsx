@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import PageHeader from "@/components/app/PageHeader";
+import StatusPill from "@/components/app/StatusPill";
 
 type AdminUser = {
   id: string;
@@ -14,6 +16,13 @@ type AdminUser = {
   mrr_cents: number;
   sends_30d: number;
   errors_30d: number;
+};
+
+const PLAN_TONE: Record<string, { dot: string; text: string; bg: string }> = {
+  free:    { dot: "rgb(113 113 122)", text: "rgb(161 161 170)", bg: "rgb(255 255 255 / 0.04)" },
+  starter: { dot: "rgb(255 159 67)",  text: "rgb(255 180 110)", bg: "rgb(255 159 67 / 0.10)" },
+  growth:  { dot: "rgb(255 99 99)",   text: "rgb(255 140 140)", bg: "rgb(255 99 99 / 0.10)" },
+  scale:   { dot: "rgb(16 185 129)",  text: "rgb(110 231 183)", bg: "rgb(16 185 129 / 0.10)" },
 };
 
 export default function AdminUsersPage() {
@@ -34,37 +43,13 @@ export default function AdminUsersPage() {
       .catch(() => setErr("fetch_failed"));
   }, [q, plan, status]);
 
-  const totalMrr = useMemo(() => {
-    return (users ?? []).reduce((s, u) => s + u.mrr_cents, 0);
-  }, [users]);
+  const totalMrr = useMemo(() => (users ?? []).reduce((s, u) => s + u.mrr_cents, 0), [users]);
 
   function exportCsv() {
     if (!users) return;
-    const cols = [
-      "id",
-      "email",
-      "plan",
-      "status",
-      "suspended",
-      "mrr_cents",
-      "sends_30d",
-      "errors_30d",
-      "created_at",
-      "last_sign_in_at",
-    ];
+    const cols = ["id", "email", "plan", "status", "suspended", "mrr_cents", "sends_30d", "errors_30d", "created_at", "last_sign_in_at"];
     const rows = users.map((u) =>
-      [
-        u.id,
-        u.email ?? "",
-        u.plan_id,
-        u.status,
-        u.suspended_at ? "yes" : "no",
-        String(u.mrr_cents),
-        String(u.sends_30d),
-        String(u.errors_30d),
-        u.created_at,
-        u.last_sign_in_at ?? "",
-      ]
+      [u.id, u.email ?? "", u.plan_id, u.status, u.suspended_at ? "yes" : "no", String(u.mrr_cents), String(u.sends_30d), String(u.errors_30d), u.created_at, u.last_sign_in_at ?? ""]
         .map((v) => `"${String(v).replaceAll('"', '""')}"`)
         .join(","),
     );
@@ -77,30 +62,39 @@ export default function AdminUsersPage() {
   }
 
   return (
-    <div className="page-narrow">
-      <div className="flex items-baseline justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-[28px] font-bold tracking-tight">Users</h1>
-          <p className="text-[13px] text-ink-500 mt-1">
-            Every signed-up tenant. Filter, search, and click a row for details.
-          </p>
-        </div>
-        <button type="button" onClick={exportCsv} className="btn-quiet text-[12px]">
-          Export CSV
-        </button>
-      </div>
+    <div className="page">
+      <PageHeader
+        eyebrow="Operator"
+        title="Users"
+        subtitle="Every signed-up tenant. Filter, search, and click a row for details."
+        actions={
+          <button type="button" onClick={exportCsv} className="btn-quiet text-[13px]">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" />
+            </svg>
+            Export CSV
+          </button>
+        }
+      />
 
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="search email or id…"
-          className="field-boxed flex-1 min-w-[200px]"
-        />
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <div className="relative flex-1 min-w-[200px]">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-ink-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" aria-hidden>
+            <circle cx="11" cy="11" r="7" />
+            <path d="M21 21l-4-4" />
+          </svg>
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="search email or id…"
+            className="w-full bg-surface border border-ink-200 rounded-md pl-8 pr-3 py-1.5 text-[13px] text-ink placeholder:text-ink-400 outline-none focus:border-ink-300 transition-colors"
+          />
+        </div>
         <select
           value={plan}
           onChange={(e) => setPlan(e.target.value as typeof plan)}
-          className="field-boxed"
+          className="bg-surface border border-ink-200 rounded-md px-2.5 py-1.5 text-[13px] text-ink outline-none focus:border-ink-300 cursor-pointer"
         >
           <option value="">All plans</option>
           <option value="free">Free</option>
@@ -111,7 +105,7 @@ export default function AdminUsersPage() {
         <select
           value={status}
           onChange={(e) => setStatus(e.target.value as typeof status)}
-          className="field-boxed"
+          className="bg-surface border border-ink-200 rounded-md px-2.5 py-1.5 text-[13px] text-ink outline-none focus:border-ink-300 cursor-pointer"
         >
           <option value="">Active + suspended</option>
           <option value="active">Active only</option>
@@ -119,78 +113,134 @@ export default function AdminUsersPage() {
         </select>
       </div>
 
-      <div className="mt-3 text-[12px] text-ink-500">
+      <div className="font-mono text-[11.5px] text-ink-500 mb-3">
         {users ? (
           <>
-            {users.length.toLocaleString()} users · MRR in view: $
-            {(totalMrr / 100).toLocaleString()}
+            {users.length.toLocaleString()} users <span className="text-ink-400">·</span>{" "}
+            MRR in view: <span className="text-ink">${(totalMrr / 100).toLocaleString()}</span>
           </>
         ) : (
           "Loading…"
         )}
       </div>
 
-      {err && <p className="text-[13px] text-red-600 mt-3">{err}</p>}
+      {err && (
+        <div
+          className="mb-3 px-3 py-2 rounded-lg text-[13px] border"
+          style={{
+            borderColor: "rgb(255 99 99 / 0.30)",
+            background: "rgb(255 99 99 / 0.06)",
+            color: "rgb(255 140 140)",
+          }}
+        >
+          Couldn&rsquo;t load: {err}
+        </div>
+      )}
 
-      <div className="sheet mt-3 overflow-x-auto">
-        <table className="w-full text-[13px]">
-          <thead>
-            <tr className="text-[12px] text-ink-500 text-left bg-paper">
-              <th className="py-2 px-3 font-medium">Email</th>
-              <th className="py-2 px-3 font-medium">Plan</th>
-              <th className="py-2 px-3 font-medium">Status</th>
-              <th className="py-2 px-3 font-medium text-right">MRR</th>
-              <th className="py-2 px-3 font-medium text-right">Sends 30d</th>
-              <th className="py-2 px-3 font-medium text-right">Errors 30d</th>
-              <th className="py-2 px-3 font-medium">Joined</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(users ?? []).map((u) => (
-              <tr
-                key={u.id}
-                className="border-t border-ink-100 hover:bg-paper/50 cursor-pointer"
-                onClick={() => (window.location.href = `/admin/users/${u.id}`)}
-              >
-                <td className="py-1.5 px-3">
-                  <Link
-                    href={`/admin/users/${u.id}`}
-                    className="hover:underline"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    {u.email ?? <span className="text-ink-500 font-mono">{u.id.slice(0, 8)}…</span>}
-                  </Link>
-                </td>
-                <td className="py-1.5 px-3 capitalize">{u.plan_id}</td>
-                <td className="py-1.5 px-3">
-                  {u.suspended_at ? (
-                    <span className="text-red-700">suspended</span>
-                  ) : (
-                    <span className="capitalize">{u.status}</span>
-                  )}
-                </td>
-                <td className="py-1.5 px-3 text-right font-mono">
-                  ${(u.mrr_cents / 100).toLocaleString()}
-                </td>
-                <td className="py-1.5 px-3 text-right font-mono">{u.sends_30d.toLocaleString()}</td>
-                <td className="py-1.5 px-3 text-right font-mono">
-                  {u.errors_30d > 0 ? (
-                    <span className="text-red-700">{u.errors_30d.toLocaleString()}</span>
-                  ) : (
-                    "0"
-                  )}
-                </td>
-                <td className="py-1.5 px-3 text-ink-500">
-                  {new Date(u.created_at).toLocaleDateString()}
-                </td>
+      {users === null ? (
+        <SkeletonTable />
+      ) : (
+        <div className="rounded-xl border border-ink-200 bg-paper overflow-x-auto">
+          <table className="w-full text-[13px]">
+            <thead>
+              <tr className="text-left bg-surface border-b border-ink-200">
+                <ColHead>Email</ColHead>
+                <ColHead>Plan</ColHead>
+                <ColHead>Status</ColHead>
+                <ColHead className="text-right">MRR</ColHead>
+                <ColHead className="text-right">Sends 30d</ColHead>
+                <ColHead className="text-right">Errors 30d</ColHead>
+                <ColHead>Joined</ColHead>
               </tr>
-            ))}
-          </tbody>
-        </table>
-        {users && users.length === 0 && (
-          <p className="py-6 text-center text-[13px] text-ink-500">No matches.</p>
-        )}
-      </div>
+            </thead>
+            <tbody>
+              {users.map((u, i) => {
+                const tone = PLAN_TONE[u.plan_id] ?? PLAN_TONE.free;
+                const suspended = Boolean(u.suspended_at);
+                return (
+                  <tr
+                    key={u.id}
+                    className={`hover:bg-hover transition-colors cursor-pointer ${
+                      i < users.length - 1 ? "border-b border-ink-100" : ""
+                    }`}
+                    onClick={() => (window.location.href = `/admin/users/${u.id}`)}
+                  >
+                    <td className="py-2.5 px-3">
+                      <Link
+                        href={`/admin/users/${u.id}`}
+                        className="text-ink hover:text-[rgb(255_140_140)] transition-colors"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {u.email ?? (
+                          <span className="text-ink-500 font-mono">{u.id.slice(0, 8)}…</span>
+                        )}
+                      </Link>
+                    </td>
+                    <td className="py-2.5 px-3">
+                      <span
+                        className="inline-flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-wider px-2 py-0.5 rounded-full"
+                        style={{ background: tone.bg, color: tone.text }}
+                      >
+                        <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: tone.dot }} />
+                        {u.plan_id}
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-3">
+                      <StatusPill status={suspended ? "failed" : u.status} />
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-mono text-ink tabular-nums">
+                      ${(u.mrr_cents / 100).toLocaleString()}
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-mono text-ink-700 tabular-nums">
+                      {u.sends_30d.toLocaleString()}
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-mono tabular-nums">
+                      {u.errors_30d > 0 ? (
+                        <span className="text-[rgb(252_165_165)]">{u.errors_30d.toLocaleString()}</span>
+                      ) : (
+                        <span className="text-ink-400">0</span>
+                      )}
+                    </td>
+                    <td className="py-2.5 px-3 font-mono text-[11.5px] text-ink-500">
+                      {new Date(u.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {users.length === 0 && (
+            <p className="py-10 text-center text-[13px] text-ink-500">No matches.</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ColHead({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return (
+    <th className={`font-mono text-[10.5px] uppercase tracking-wider text-ink-500 font-medium py-2.5 px-3 ${className}`}>
+      {children}
+    </th>
+  );
+}
+
+function SkeletonTable() {
+  return (
+    <div className="rounded-xl border border-ink-200 bg-paper overflow-hidden">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <div
+          key={i}
+          className={`grid grid-cols-7 gap-3 items-center px-3 py-2.5 ${
+            i < 5 ? "border-b border-ink-100" : ""
+          }`}
+        >
+          {Array.from({ length: 7 }).map((__, j) => (
+            <div key={j} className="h-3 rounded bg-ink-100 animate-pulse" />
+          ))}
+        </div>
+      ))}
     </div>
   );
 }

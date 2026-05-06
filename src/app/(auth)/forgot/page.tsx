@@ -2,7 +2,12 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import Logo from "@/components/Logo";
+import AuthShell from "@/components/auth/AuthShell";
+import {
+  AuthLabel,
+  AuthInput,
+  AuthPrimaryButton,
+} from "@/components/auth/AuthForm";
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
@@ -21,64 +26,82 @@ export default function ForgotPasswordPage() {
     setSent(true);
   }
 
-  return (
-    <div className="min-h-screen flex items-center justify-center p-6 bg-paper">
-      <div className="w-full max-w-sm">
-        <div className="flex items-center gap-2 mb-10 text-ink">
-          <Logo size={28} />
-          <span className="font-semibold text-[16px] tracking-tight">EmailsVia</span>
+  if (sent) {
+    return (
+      <AuthShell>
+        <div className="text-center space-y-5">
+          <div className="mx-auto grid place-items-center w-14 h-14 rounded-2xl m-glass">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-[rgb(255_140_140)]" aria-hidden>
+              <path d="M3 7l9 6 9-6M3 7v10a2 2 0 002 2h14a2 2 0 002-2V7M3 7l2-2h14l2 2" />
+            </svg>
+          </div>
+          <h1 className="m-display text-[28px] leading-tight">Reset link sent.</h1>
+          <p className="m-body text-[14px]">
+            If an account exists for{" "}
+            <span className="text-[rgb(244_244_245)] m-mono text-[13px]">{email}</span>, the
+            link is on its way. Open it from a browser signed into the same Gmail.
+          </p>
+          <Link
+            href="/login"
+            className="m-btn m-btn-ghost text-[14px] py-2.5 inline-flex w-full"
+          >
+            Back to sign in
+          </Link>
         </div>
+      </AuthShell>
+    );
+  }
 
-        {sent ? (
-          <>
-            <h1 className="text-xl font-semibold mb-3">Check your inbox</h1>
-            <p className="text-[13px] text-ink-500 mb-6">
-              If an account exists for <span className="text-ink">{email}</span>, we just sent
-              a password-reset link. Open it from a browser signed into the same Gmail to
-              finish the reset.
-            </p>
-            <Link href="/login" className="btn-ghost w-full inline-block text-center">
+  return (
+    <AuthShell>
+      <form onSubmit={onSubmit} className="space-y-6">
+        <header>
+          <h1 className="m-display text-[32px] sm:text-[36px] leading-[1.05]">
+            Reset password
+          </h1>
+          <p className="m-body text-[14px] mt-2">
+            Happens to everyone. Enter the email on your account and we&rsquo;ll send a
+            reset link.
+          </p>
+        </header>
+
+        <div className="space-y-4">
+          <div>
+            <AuthLabel htmlFor="forgot-email">Email</AuthLabel>
+            <AuthInput
+              id="forgot-email"
+              type="email"
+              autoComplete="email"
+              autoFocus
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@yourdomain.com"
+            />
+          </div>
+
+          <AuthPrimaryButton disabled={!email} loading={loading}>
+            Send reset link
+          </AuthPrimaryButton>
+
+          <div className="flex items-center justify-between text-[13px] text-[rgb(161_161_170)] pt-2">
+            <Link
+              href="/login"
+              className="hover:text-[rgb(244_244_245)] transition-colors cursor-pointer inline-flex items-center gap-1.5"
+            >
+              <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M7 2L3 6l4 4" />
+              </svg>
               Back to sign in
             </Link>
-          </>
-        ) : (
-          <form onSubmit={onSubmit}>
-            <h1 className="text-xl font-semibold mb-1">Reset password</h1>
-            <p className="text-[13px] text-ink-500 mb-8">
-              Enter your account email and we&rsquo;ll send a reset link.
-            </p>
-
-            <div className="space-y-5">
-              <div>
-                <label htmlFor="forgot-email" className="label-cap">Email</label>
-                <input
-                  id="forgot-email"
-                  className="field-boxed"
-                  type="email"
-                  autoComplete="email"
-                  autoFocus
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@example.com"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={loading || !email}
-                className="btn-accent w-full"
-              >
-                {loading ? "Sending…" : "Send reset link"}
-              </button>
-
-              <div className="flex items-center justify-between text-[13px] text-ink-500">
-                <Link href="/login" className="hover:text-ink">Back to sign in</Link>
-                <Link href="/signup" className="hover:text-ink">Sign up</Link>
-              </div>
-            </div>
-          </form>
-        )}
-      </div>
-    </div>
+            <Link
+              href="/signup"
+              className="hover:text-[rgb(244_244_245)] transition-colors cursor-pointer"
+            >
+              Create account
+            </Link>
+          </div>
+        </div>
+      </form>
+    </AuthShell>
   );
 }

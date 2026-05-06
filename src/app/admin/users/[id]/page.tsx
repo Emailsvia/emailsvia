@@ -3,6 +3,9 @@
 import { use, useEffect, useState } from "react";
 import Link from "next/link";
 import { StackedBars, LegendDot } from "@/components/MiniChart";
+import PageHeader from "@/components/app/PageHeader";
+import KpiCard from "@/components/app/KpiCard";
+import StatusPill from "@/components/app/StatusPill";
 
 type Detail = {
   user: {
@@ -44,6 +47,11 @@ type Detail = {
     actor_id: string;
     created_at: string;
   }>;
+};
+
+const CHART = {
+  sends:  "rgb(244 244 245)",
+  errors: "rgb(239 68 68)",
 };
 
 export default function AdminUserDetailPage({
@@ -107,129 +115,135 @@ export default function AdminUserDetailPage({
 
   if (!d) {
     return (
-      <div className="page-narrow">
-        <Link href="/admin/users" className="text-[12px] text-ink-500 hover:text-ink">
-          ← Back to users
-        </Link>
-        <h1 className="text-[28px] font-bold tracking-tight mt-2">User</h1>
-        <p className="text-[13px] text-ink-500 mt-2">Loading…</p>
+      <div className="page">
+        <BackLink />
+        <div className="space-y-4 mt-4">
+          <div className="h-8 w-1/2 rounded bg-ink-100 animate-pulse" />
+          <div className="h-3 w-1/3 rounded bg-ink-100 animate-pulse" />
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-6">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="h-20 rounded-xl bg-ink-100 animate-pulse" />
+            ))}
+          </div>
+        </div>
       </div>
     );
   }
 
-  const send30 = d.series.reduce((s, p) => s + p.sends, 0);
-  const err30 = d.series.reduce((s, p) => s + p.errors, 0);
+  const send30     = d.series.reduce((s, p) => s + p.sends, 0);
+  const err30      = d.series.reduce((s, p) => s + p.errors, 0);
+  const planId     = d.subscription?.plan_id ?? "free";
+  const suspended  = Boolean(d.subscription?.suspended_at);
+  const subStatus  = suspended ? "failed" : (d.subscription?.status ?? "active");
 
   return (
-    <div className="page-narrow">
-      <Link href="/admin/users" className="text-[12px] text-ink-500 hover:text-ink">
-        ← Back to users
-      </Link>
-      <div className="mt-2 flex items-baseline justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-[24px] font-bold tracking-tight">
-            {d.user.email ?? d.user.id}
-          </h1>
-          <p className="text-[12px] text-ink-500 font-mono mt-1">{d.user.id}</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <select
-            disabled={busy}
-            value={d.subscription?.plan_id ?? "free"}
-            onChange={(e) => changePlan(e.target.value)}
-            className="field-boxed text-[13px]"
-          >
-            <option value="free">Force: Free</option>
-            <option value="starter">Force: Starter</option>
-            <option value="growth">Force: Growth</option>
-            <option value="scale">Force: Scale</option>
-          </select>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={toggleSuspend}
-            className={
-              d.subscription?.suspended_at
-                ? "btn-quiet text-[13px]"
-                : "btn-quiet text-[13px] text-red-700"
-            }
-          >
-            {d.subscription?.suspended_at ? "Un-suspend" : "Suspend"}
-          </button>
-        </div>
-      </div>
+    <div className="page">
+      <BackLink />
 
-      {msg && <p className="text-[13px] text-ink-500 mt-3">{msg}</p>}
+      <PageHeader
+        eyebrow={
+          <span className="inline-flex items-center gap-2">
+            <StatusPill status={subStatus} />
+            <span className="text-ink-500 normal-case font-sans tracking-normal">
+              Plan <span className="text-ink m-mono">{planId}</span>
+            </span>
+          </span>
+        }
+        title={d.user.email ?? "Unknown user"}
+        subtitle={
+          <span className="font-mono text-ink-500">{d.user.id}</span>
+        }
+        actions={
+          <>
+            <select
+              disabled={busy}
+              value={planId}
+              onChange={(e) => changePlan(e.target.value)}
+              className="bg-surface border border-ink-200 rounded-md px-2.5 py-1.5 text-[13px] text-ink outline-none focus:border-ink-300 cursor-pointer"
+            >
+              <option value="free">Force: Free</option>
+              <option value="starter">Force: Starter</option>
+              <option value="growth">Force: Growth</option>
+              <option value="scale">Force: Scale</option>
+            </select>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={toggleSuspend}
+              className={
+                suspended
+                  ? "btn-quiet text-[13px]"
+                  : "btn-quiet text-[13px] text-[rgb(252_165_165)] hover:text-[rgb(255_140_140)]"
+              }
+            >
+              {suspended ? "Un-suspend" : "Suspend"}
+            </button>
+          </>
+        }
+      />
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5">
-        <Stat label="Plan" value={(d.subscription?.plan_id ?? "free").toUpperCase()} />
-        <Stat
-          label="Status"
-          value={
-            d.subscription?.suspended_at
-              ? "SUSPENDED"
-              : (d.subscription?.status ?? "active").toUpperCase()
-          }
-          tone={d.subscription?.suspended_at ? "warn" : undefined}
+      {msg && (
+        <div
+          className="mb-6 px-3 py-2 rounded-lg text-[13px] border"
+          style={{
+            borderColor: "rgb(255 255 255 / 0.10)",
+            background: "rgb(255 255 255 / 0.03)",
+            color: "rgb(244 244 245)",
+          }}
+        >
+          {msg}
+        </div>
+      )}
+
+      <section className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+        <KpiCard label="Plan" value={planId.toUpperCase()} />
+        <KpiCard label="Status" value={(suspended ? "Suspended" : (d.subscription?.status ?? "active"))} tone={suspended ? "hot" : "default"} />
+        <KpiCard label="Sends · 30d" value={send30.toLocaleString()} />
+        <KpiCard label="Errors · 30d" value={err30.toLocaleString()} tone={err30 > 0 ? "hot" : "default"} />
+      </section>
+
+      <Panel
+        title="Sends · last 30 days"
+        legend={
+          <>
+            <LegendDot color={CHART.sends}  label="Sent" />
+            <LegendDot color={CHART.errors} label="Errors" />
+          </>
+        }
+      >
+        <StackedBars
+          data={d.series.map((p) => ({
+            day: p.day,
+            values: { sends: p.sends, errors: p.errors },
+          }))}
+          keys={["sends", "errors"]}
+          colors={{ sends: CHART.sends, errors: CHART.errors }}
+          height={120}
         />
-        <Stat label="Sends · 30d" value={send30.toLocaleString()} />
-        <Stat
-          label="Errors · 30d"
-          value={err30.toLocaleString()}
-          tone={err30 > 0 ? "warn" : undefined}
-        />
-      </div>
-
-      <div className="sheet p-4 mt-3">
-        <div className="flex items-baseline justify-between flex-wrap gap-2">
-          <h2 className="text-[14px] font-semibold">Sends · last 30 days</h2>
-          <div className="flex items-center gap-3">
-            <LegendDot color="#1a1a1a" label="Sent" />
-            <LegendDot color="#dc2626" label="Errors" />
-          </div>
-        </div>
-        <div className="mt-3">
-          <StackedBars
-            data={d.series.map((p) => ({
-              day: p.day,
-              values: { sends: p.sends, errors: p.errors },
-            }))}
-            keys={["sends", "errors"]}
-            colors={{ sends: "#1a1a1a", errors: "#dc2626" }}
-            height={120}
-          />
-        </div>
-      </div>
+      </Panel>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
-        <div className="sheet p-4">
-          <h2 className="text-[14px] font-semibold mb-3">Account</h2>
+        <Panel title="Account">
           <KV label="Email" value={d.user.email ?? "—"} />
-          <KV label="Provider" value={d.user.provider ?? "email"} />
+          <KV label="Provider" value={d.user.provider ?? "email"} mono />
           <KV label="Joined" value={new Date(d.user.created_at).toLocaleString()} />
           <KV
             label="Last sign-in"
-            value={
-              d.user.last_sign_in_at
-                ? new Date(d.user.last_sign_in_at).toLocaleString()
-                : "never"
-            }
+            value={d.user.last_sign_in_at ? new Date(d.user.last_sign_in_at).toLocaleString() : "never"}
           />
           <KV
             label="Stripe customer"
             value={
               d.subscription?.stripe_customer_id ? (
                 <a
-                  className="hover:underline font-mono text-[12px]"
+                  className="font-mono text-[12px] text-ink hover:text-[rgb(255_140_140)] transition-colors underline decoration-[rgb(255_99_99/0.4)] underline-offset-[3px]"
                   href={`https://dashboard.stripe.com/customers/${d.subscription.stripe_customer_id}`}
                   target="_blank"
                   rel="noreferrer"
                 >
                   {d.subscription.stripe_customer_id}
                 </a>
-              ) : (
-                "—"
-              )
+              ) : "—"
             }
           />
           <KV
@@ -240,112 +254,121 @@ export default function AdminUserDetailPage({
                 : "—"
             }
           />
-        </div>
+        </Panel>
 
-        <div className="sheet p-4">
-          <h2 className="text-[14px] font-semibold mb-3">Senders ({d.counts.senders})</h2>
+        <Panel title={`Senders (${d.counts.senders})`}>
           {d.senders.length === 0 ? (
             <p className="text-[13px] text-ink-500">No senders connected.</p>
           ) : (
-            <ul className="text-[13px] space-y-1.5">
-              {d.senders.map((s) => (
-                <li key={s.id} className="flex items-center justify-between">
-                  <span className="truncate">
-                    <span className="font-medium">{s.label}</span>{" "}
-                    <span className="text-ink-500">· {s.email}</span>
-                  </span>
-                  <span className="text-[11px] text-ink-500 ml-3">
-                    {s.auth_method}
-                    {s.oauth_status !== "ok" ? (
-                      <span className="text-red-700"> · {s.oauth_status}</span>
-                    ) : null}
-                  </span>
-                </li>
-              ))}
+            <ul className="text-[13px] space-y-2">
+              {d.senders.map((s) => {
+                const revoked = s.oauth_status !== "ok";
+                return (
+                  <li key={s.id} className="flex items-center justify-between gap-3">
+                    <span className="min-w-0">
+                      <span className="font-medium text-ink">{s.label}</span>{" "}
+                      <span className="font-mono text-[11.5px] text-ink-500">{s.email}</span>
+                    </span>
+                    <span className="font-mono text-[10.5px] uppercase tracking-wider text-ink-500 shrink-0">
+                      {s.auth_method}
+                      {revoked && (
+                        <span
+                          className="ml-1.5 px-1.5 py-0.5 rounded-full"
+                          style={{ background: "rgb(239 68 68 / 0.10)", color: "rgb(252 165 165)" }}
+                        >
+                          {s.oauth_status}
+                        </span>
+                      )}
+                    </span>
+                  </li>
+                );
+              })}
             </ul>
           )}
-        </div>
+        </Panel>
       </div>
 
-      <div className="sheet p-4 mt-3">
-        <h2 className="text-[14px] font-semibold mb-3">
-          Recent campaigns ({d.counts.campaigns})
-        </h2>
+      <Panel title={`Recent campaigns (${d.counts.campaigns})`} className="mt-3">
         {d.recent_campaigns.length === 0 ? (
           <p className="text-[13px] text-ink-500">No campaigns yet.</p>
         ) : (
-          <table className="w-full text-[13px]">
-            <tbody>
-              {d.recent_campaigns.map((c) => (
-                <tr key={c.id} className="border-b border-ink-100 last:border-0">
-                  <td className="py-1.5">
-                    <span className="font-medium">{c.name}</span>
-                  </td>
-                  <td className="py-1.5 capitalize text-ink-500">{c.status}</td>
-                  <td className="py-1.5 text-right text-[11px] text-ink-500">
-                    {new Date(c.created_at).toLocaleDateString()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="space-y-1">
+            {d.recent_campaigns.map((c) => (
+              <div key={c.id} className="flex items-center justify-between gap-3 py-1.5 px-2 rounded hover:bg-hover transition-colors">
+                <span className="text-[13px] text-ink truncate flex-1">{c.name}</span>
+                <StatusPill status={c.status} />
+                <span className="font-mono text-[11.5px] text-ink-500 shrink-0">
+                  {new Date(c.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })}
+                </span>
+              </div>
+            ))}
+          </div>
         )}
-      </div>
+      </Panel>
 
-      <div className="sheet p-4 mt-3">
-        <h2 className="text-[14px] font-semibold mb-3">Operator audit log</h2>
+      <Panel title="Operator audit log" className="mt-3">
         {d.audit.length === 0 ? (
           <p className="text-[13px] text-ink-500">No operator actions on this user yet.</p>
         ) : (
-          <table className="w-full text-[13px]">
-            <tbody>
-              {d.audit.map((a) => (
-                <tr key={a.id} className="border-b border-ink-100 last:border-0">
-                  <td className="py-1.5 font-mono text-[12px]">{a.action}</td>
-                  <td className="py-1.5 text-ink-500 text-[11px] truncate max-w-[400px]">
-                    {a.payload ? JSON.stringify(a.payload) : ""}
-                  </td>
-                  <td className="py-1.5 text-right text-[11px] text-ink-500">
-                    {new Date(a.created_at).toLocaleString()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="space-y-1">
+            {d.audit.map((a) => (
+              <div key={a.id} className="grid grid-cols-[auto,1fr,auto] items-baseline gap-3 py-1.5 px-2 rounded hover:bg-hover transition-colors">
+                <code className="font-mono text-[12px] text-ink">{a.action}</code>
+                <span className="font-mono text-[11px] text-ink-500 truncate">
+                  {a.payload ? JSON.stringify(a.payload) : ""}
+                </span>
+                <span className="font-mono text-[11px] text-ink-500 shrink-0">
+                  {new Date(a.created_at).toLocaleString()}
+                </span>
+              </div>
+            ))}
+          </div>
         )}
-      </div>
+      </Panel>
     </div>
   );
 }
 
-function Stat({
-  label,
-  value,
-  tone,
+function BackLink() {
+  return (
+    <Link
+      href="/admin/users"
+      className="inline-flex items-center gap-1.5 text-[12px] text-ink-500 hover:text-ink transition-colors cursor-pointer mb-4"
+    >
+      <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+        <path d="M7 2L3 6l4 4" />
+      </svg>
+      Back to users
+    </Link>
+  );
+}
+
+function Panel({
+  title, legend, children, className = "",
 }: {
-  label: string;
-  value: string;
-  tone?: "warn";
+  title: string;
+  legend?: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
 }) {
   return (
-    <div className="sheet p-4">
-      <div className="text-[11px] uppercase tracking-wide text-ink-500">{label}</div>
-      <div
-        className={
-          "text-[18px] font-bold mt-1 " + (tone === "warn" ? "text-red-600" : "text-ink")
-        }
-      >
-        {value}
+    <section className={`rounded-xl border border-ink-200 bg-paper p-4 sm:p-5 ${className}`}>
+      <div className="flex items-baseline justify-between flex-wrap gap-2 mb-3">
+        <h2 className="text-[14px] font-semibold tracking-[-0.01em] text-ink">{title}</h2>
+        {legend && <div className="flex items-center gap-3 text-[11.5px] text-ink-500">{legend}</div>}
       </div>
-    </div>
+      {children}
+    </section>
   );
 }
 
-function KV({ label, value }: { label: string; value: React.ReactNode }) {
+function KV({ label, value, mono = false }: { label: string; value: React.ReactNode; mono?: boolean }) {
   return (
-    <div className="flex items-baseline justify-between py-1 border-b border-ink-100 last:border-0">
-      <span className="text-[12px] text-ink-500">{label}</span>
-      <span className="text-[13px] text-right">{value}</span>
+    <div className="flex items-baseline justify-between gap-3 py-2 border-b border-ink-100 last:border-0">
+      <span className="text-[12.5px] text-ink-500">{label}</span>
+      <span className={`text-[13px] text-right text-ink ${mono ? "font-mono text-[12px]" : ""}`}>
+        {value}
+      </span>
     </div>
   );
 }

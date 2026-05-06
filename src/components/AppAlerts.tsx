@@ -13,21 +13,6 @@ type Alert = {
   cta: string;
 };
 
-const TONE: Record<AlertSeverity, { wrap: string; cta: string }> = {
-  error: {
-    wrap: "border-red-200 bg-red-50 text-red-900",
-    cta: "text-red-700 hover:text-red-900 underline",
-  },
-  warn: {
-    wrap: "border-amber-200 bg-amber-50 text-amber-900",
-    cta: "text-amber-700 hover:text-amber-900 underline",
-  },
-  info: {
-    wrap: "border-ink-200 bg-paper text-ink",
-    cta: "text-ink hover:underline",
-  },
-};
-
 // Banner stack rendered above every /app page. Polls the alerts feed every
 // 60s so a sender-revoked event surfaces without a refresh. Dismiss is
 // session-local — alerts come back next reload because they're sourced
@@ -41,19 +26,12 @@ export default function AppAlerts() {
     function load() {
       fetch("/api/app/alerts", { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : { alerts: [] }))
-        .then((d) => {
-          if (!cancelled) setAlerts(d.alerts ?? []);
-        })
-        .catch(() => {
-          if (!cancelled) setAlerts([]);
-        });
+        .then((d) => { if (!cancelled) setAlerts(d.alerts ?? []); })
+        .catch(() => { if (!cancelled) setAlerts([]); });
     }
     load();
     const t = setInterval(load, 60_000);
-    return () => {
-      cancelled = true;
-      clearInterval(t);
-    };
+    return () => { cancelled = true; clearInterval(t); };
   }, []);
 
   if (!alerts || alerts.length === 0) return null;
@@ -62,71 +40,138 @@ export default function AppAlerts() {
 
   return (
     <div className="px-6 md:px-10 pt-4 space-y-2">
-      {visible.map((a) => {
-        const tone = TONE[a.severity];
-        const isExternal = a.href.startsWith("mailto:") || a.href.startsWith("http");
-        return (
-          <div
-            key={a.id}
-            className={`flex items-start gap-3 rounded-md border px-3 py-2.5 text-[13px] ${tone.wrap}`}
-            role={a.severity === "error" ? "alert" : "status"}
-          >
-            <DotIcon severity={a.severity} />
-            <div className="flex-1 min-w-0">
-              <div className="font-semibold">{a.title}</div>
-              <div className="opacity-90">{a.body}</div>
-            </div>
-            {isExternal ? (
-              <a
-                href={a.href}
-                className={`text-[12px] font-medium shrink-0 mt-0.5 ${tone.cta}`}
-              >
-                {a.cta} →
-              </a>
-            ) : (
-              <Link
-                href={a.href}
-                className={`text-[12px] font-medium shrink-0 mt-0.5 ${tone.cta}`}
-              >
-                {a.cta} →
-              </Link>
-            )}
-            <button
-              type="button"
-              aria-label="Dismiss"
-              onClick={() =>
-                setDismissed((prev) => {
-                  const next = new Set(prev);
-                  next.add(a.id);
-                  return next;
-                })
-              }
-              className="text-current opacity-50 hover:opacity-100 mt-0.5"
-            >
-              <svg
-                className="w-3.5 h-3.5"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-              >
-                <path d="M6 6l12 12M6 18L18 6" />
-              </svg>
-            </button>
-          </div>
-        );
-      })}
+      {visible.map((a) => (
+        <AlertBanner
+          key={a.id}
+          alert={a}
+          onDismiss={() =>
+            setDismissed((prev) => {
+              const next = new Set(prev);
+              next.add(a.id);
+              return next;
+            })
+          }
+        />
+      ))}
     </div>
   );
 }
 
-function DotIcon({ severity }: { severity: AlertSeverity }) {
-  const fill =
-    severity === "error" ? "#dc2626" : severity === "warn" ? "#d97706" : "#1a1a1a";
+function AlertBanner({ alert, onDismiss }: { alert: Alert; onDismiss: () => void }) {
+  const isExternal = alert.href.startsWith("mailto:") || alert.href.startsWith("http");
+  const tone = TONE[alert.severity];
+
   return (
-    <span
-      className="inline-block w-2 h-2 rounded-full mt-1.5 shrink-0"
-      style={{ background: fill }}
-    />
+    <div
+      role={alert.severity === "error" ? "alert" : "status"}
+      className="relative flex items-start gap-3 rounded-xl border px-4 py-3 backdrop-blur-md transition-all"
+      style={{
+        borderColor: tone.border,
+        background: tone.bg,
+      }}
+    >
+      <span
+        className="mt-1 flex-shrink-0 grid place-items-center w-5 h-5 rounded-full"
+        style={{ background: tone.iconBg }}
+        aria-hidden
+      >
+        <Glyph severity={alert.severity} color={tone.icon} />
+      </span>
+
+      <div className="flex-1 min-w-0">
+        <div className="flex items-baseline gap-2 flex-wrap">
+          <span className="text-[13px] font-semibold text-ink">{alert.title}</span>
+          <span className="text-[12.5px] text-ink-600 leading-relaxed">{alert.body}</span>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-1 flex-shrink-0">
+        {isExternal ? (
+          <a
+            href={alert.href}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors cursor-pointer"
+            style={{ color: tone.cta, background: tone.ctaBg }}
+          >
+            {alert.cta}
+            <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M2 6h8M6 2l4 4-4 4" />
+            </svg>
+          </a>
+        ) : (
+          <Link
+            href={alert.href}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors cursor-pointer"
+            style={{ color: tone.cta, background: tone.ctaBg }}
+          >
+            {alert.cta}
+            <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M2 6h8M6 2l4 4-4 4" />
+            </svg>
+          </Link>
+        )}
+        <button
+          type="button"
+          aria-label="Dismiss"
+          onClick={onDismiss}
+          className="grid place-items-center w-6 h-6 rounded-md text-ink-500 hover:text-ink hover:bg-hover transition-colors cursor-pointer"
+        >
+          <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden>
+            <path d="M3 3l6 6M3 9l6-6" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const TONE: Record<
+  AlertSeverity,
+  { border: string; bg: string; icon: string; iconBg: string; cta: string; ctaBg: string }
+> = {
+  error: {
+    border: "rgb(255 99 99 / 0.30)",
+    bg:     "rgb(255 99 99 / 0.06)",
+    icon:   "rgb(255 140 140)",
+    iconBg: "rgb(255 99 99 / 0.18)",
+    cta:    "rgb(255 140 140)",
+    ctaBg:  "rgb(255 99 99 / 0.10)",
+  },
+  warn: {
+    border: "rgb(255 159 67 / 0.30)",
+    bg:     "rgb(255 159 67 / 0.06)",
+    icon:   "rgb(255 180 110)",
+    iconBg: "rgb(255 159 67 / 0.18)",
+    cta:    "rgb(255 180 110)",
+    ctaBg:  "rgb(255 159 67 / 0.10)",
+  },
+  info: {
+    border: "rgb(255 255 255 / 0.10)",
+    bg:     "rgb(255 255 255 / 0.025)",
+    icon:   "rgb(244 244 245)",
+    iconBg: "rgb(255 255 255 / 0.06)",
+    cta:    "rgb(244 244 245)",
+    ctaBg:  "rgb(255 255 255 / 0.06)",
+  },
+};
+
+function Glyph({ severity, color }: { severity: AlertSeverity; color: string }) {
+  if (severity === "error") {
+    return (
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+        <path d="M12 8v5M12 17h.01" />
+      </svg>
+    );
+  }
+  if (severity === "warn") {
+    return (
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+        <path d="M12 9v4M12 17h.01" />
+      </svg>
+    );
+  }
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M12 8v8M12 8h.01" />
+    </svg>
   );
 }

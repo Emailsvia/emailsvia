@@ -3,7 +3,17 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import Logo from "@/components/Logo";
+import AuthShell from "@/components/auth/AuthShell";
+import AuthSidePanel from "@/components/auth/AuthSidePanel";
+import {
+  AuthLabel,
+  AuthInput,
+  AuthPasswordInput,
+  AuthPrimaryButton,
+  AuthDivider,
+  AuthError,
+  GoogleButton,
+} from "@/components/auth/AuthForm";
 
 export default function SignupPage() {
   const [email, setEmail] = useState("");
@@ -25,7 +35,11 @@ export default function SignupPage() {
     setLoading(false);
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
-      setErr(body?.error === "password_too_short" ? "Password must be at least 8 characters." : "Couldn't create account.");
+      setErr(
+        body?.error === "password_too_short"
+          ? "Password needs at least 8 characters."
+          : "Couldn't create the account. Try again?",
+      );
       return;
     }
     if (body.needsConfirmation) {
@@ -42,85 +56,114 @@ export default function SignupPage() {
 
   if (needsConfirm) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-6 bg-paper">
-        <div className="w-full max-w-sm text-center">
-          <div className="flex items-center justify-center gap-2 mb-10 text-ink">
-            <Logo size={28} />
-            <span className="font-semibold text-[16px] tracking-tight">EmailsVia</span>
+      <AuthShell>
+        <div className="text-center space-y-5">
+          <div className="mx-auto grid place-items-center w-14 h-14 rounded-2xl m-glass">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-[rgb(255_140_140)]" aria-hidden>
+              <path d="M3 7l9 6 9-6M3 7v10a2 2 0 002 2h14a2 2 0 002-2V7M3 7l2-2h14l2 2" />
+            </svg>
           </div>
-          <h1 className="text-xl font-semibold mb-3">Check your inbox</h1>
-          <p className="text-[13px] text-ink-500">
-            We sent a confirmation link to <span className="text-ink">{email}</span>. Click it to finish signing up.
+          <h1 className="m-display text-[28px] leading-tight">Check your inbox.</h1>
+          <p className="m-body text-[14px]">
+            We sent a confirmation link to{" "}
+            <span className="text-[rgb(244_244_245)] m-mono text-[13px]">{email}</span>.
+            Click it to finish signing up — usually arrives in a minute, sometimes less.
           </p>
+          <div className="m-pill mx-auto">
+            <span className="m-pill-dot" />
+            <span>Tip: check spam if it doesn&rsquo;t show in 2 mins</span>
+          </div>
         </div>
-      </div>
+      </AuthShell>
     );
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-6 bg-paper">
-      <form onSubmit={onSubmit} className="w-full max-w-sm">
-        <div className="flex items-center gap-2 mb-10 text-ink">
-          <Logo size={28} />
-          <span className="font-semibold text-[16px] tracking-tight">EmailsVia</span>
-        </div>
+    <AuthShell side={<AuthSidePanel variant="join" />}>
+      <form onSubmit={onSubmit} className="space-y-6">
+        <header>
+          <h1 className="m-display text-[32px] sm:text-[36px] leading-[1.05]">
+            Create your account
+          </h1>
+          <p className="m-body text-[14px] mt-2">
+            Free for 50 emails a day. No card. Takes 60 seconds.
+          </p>
+        </header>
 
-        <h1 className="text-xl font-semibold mb-1">Create your account</h1>
-        <p className="text-[13px] text-ink-500 mb-8">Free 50 emails / day, no card required.</p>
+        <GoogleButton onClick={onGoogle} />
 
-        <button type="button" onClick={onGoogle} className="btn-ghost w-full mb-5">
-          Continue with Google
-        </button>
+        <AuthDivider>or with email</AuthDivider>
 
-        <div className="flex items-center gap-3 mb-5 text-[12px] text-ink-500">
-          <div className="h-px flex-1 bg-ink-200" />
-          <span>or</span>
-          <div className="h-px flex-1 bg-ink-200" />
-        </div>
-
-        <div className="space-y-5">
+        <div className="space-y-4">
           <div>
-            <label htmlFor="signup-email" className="label-cap">Email</label>
-            <input
+            <AuthLabel htmlFor="signup-email">Email</AuthLabel>
+            <AuthInput
               id="signup-email"
-              className="field-boxed"
               type="email"
               autoComplete="email"
               autoFocus
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
+              placeholder="you@yourdomain.com"
+              hasError={Boolean(err)}
             />
           </div>
 
           <div>
-            <label htmlFor="signup-password" className="label-cap">Password</label>
-            <input
+            <AuthLabel htmlFor="signup-password">Password</AuthLabel>
+            <AuthPasswordInput
               id="signup-password"
-              className="field-boxed"
-              type="password"
               autoComplete="new-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="At least 8 characters"
+              hasError={Boolean(err)}
             />
           </div>
 
-          {err && <p className="text-[13px] text-red-600">{err}</p>}
+          <AuthError>{err}</AuthError>
 
-          <button
-            type="submit"
-            disabled={loading || !email || !password}
-            className="btn-accent w-full"
+          <AuthPrimaryButton
+            disabled={!email || !password}
+            loading={loading}
           >
-            {loading ? "Creating account…" : "Sign up"}
-          </button>
+            Start free
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M2 7h10M8 3l4 4-4 4" />
+            </svg>
+          </AuthPrimaryButton>
 
-          <p className="text-[13px] text-ink-500 text-center">
-            Already have an account? <Link href="/login" className="text-ink hover:underline">Sign in</Link>
+          <p className="text-[11.5px] text-[rgb(113_113_122)] text-center leading-relaxed">
+            By creating an account you agree to our{" "}
+            <Link
+              href="/terms"
+              className="underline decoration-[rgb(255_255_255/0.2)] underline-offset-[3px] hover:text-[rgb(244_244_245)] hover:decoration-[rgb(255_99_99/0.5)] transition-colors cursor-pointer"
+            >
+              Terms
+            </Link>{" "}
+            and{" "}
+            <Link
+              href="/privacy"
+              className="underline decoration-[rgb(255_255_255/0.2)] underline-offset-[3px] hover:text-[rgb(244_244_245)] hover:decoration-[rgb(255_99_99/0.5)] transition-colors cursor-pointer"
+            >
+              Privacy Policy
+            </Link>
+            .
           </p>
         </div>
+
+        <p className="text-center text-[13px] text-[rgb(161_161_170)] pt-2 border-t border-[rgb(255_255_255/0.06)]">
+          <span className="block pt-4">
+            Already have an account?{" "}
+            <Link
+              href="/login"
+              className="text-[rgb(244_244_245)] underline decoration-[rgb(255_99_99/0.5)] underline-offset-[3px] hover:decoration-[rgb(255_99_99)] transition-colors cursor-pointer"
+            >
+              Sign in
+            </Link>
+          </span>
+        </p>
       </form>
-    </div>
+    </AuthShell>
   );
 }

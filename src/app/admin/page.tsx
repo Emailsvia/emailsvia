@@ -1,7 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { StackedBars, LegendDot } from "@/components/MiniChart";
+import PageHeader from "@/components/app/PageHeader";
+import KpiCard from "@/components/app/KpiCard";
+import StatusPill from "@/components/app/StatusPill";
 
 type AdminMetrics = {
   mrr_cents: number;
@@ -36,275 +40,345 @@ type SeriesPoint = {
   interested: number;
 };
 
-const PLAN_COLORS: Record<string, string> = {
-  free: "#94a3b8",
-  starter: "#60a5fa",
-  growth: "#34d399",
-  scale: "#a78bfa",
+const PLAN_TONE: Record<string, { dot: string; text: string; bg: string }> = {
+  free:    { dot: "rgb(113 113 122)", text: "rgb(161 161 170)", bg: "rgb(255 255 255 / 0.04)" },
+  starter: { dot: "rgb(255 159 67)",  text: "rgb(255 180 110)", bg: "rgb(255 159 67 / 0.10)" },
+  growth:  { dot: "rgb(255 99 99)",   text: "rgb(255 140 140)", bg: "rgb(255 99 99 / 0.10)" },
+  scale:   { dot: "rgb(16 185 129)",  text: "rgb(110 231 183)", bg: "rgb(16 185 129 / 0.10)" },
+};
+
+// Theme-aware chart colors. Replace the old cool-blue / red-600 with our
+// warm gradient stops + signal green — keeps charts on-brand.
+const CHART_COLORS = {
+  sends:       "rgb(244 244 245)",
+  errors:      "rgb(239 68 68)",
+  free:        "rgb(113 113 122)",
+  paid:        "rgb(255 99 99)",
+  interested:  "rgb(16 185 129)",
+  other:       "rgb(82 82 91)",
 };
 
 export default function AdminOverviewPage() {
   const [data, setData] = useState<AdminMetrics | null>(null);
   const [series, setSeries] = useState<SeriesPoint[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
-  useEffect(() => {
-    Promise.all([
-      fetch("/api/admin", { cache: "no-store" }).then(async (r) =>
-        r.status === 401 ? { not_admin: true } : await r.json(),
-      ),
-      fetch("/api/admin/series?days=30", { cache: "no-store" }).then((r) => r.json()),
-    ])
-      .then(([m, s]) => {
-        if ((m as { not_admin?: boolean }).not_admin) {
-          setErr("not_admin");
-          return;
-        }
-        setData(m);
-        setSeries(s.series);
-      })
-      .catch(() => setErr("fetch_failed"));
-  }, []);
+  async function load() {
+    setRefreshing(true);
+    try {
+      const [m, s] = await Promise.all([
+        fetch("/api/admin", { cache: "no-store" }).then(async (r) =>
+          r.status === 401 ? { not_admin: true } : await r.json(),
+        ),
+        fetch("/api/admin/series?days=30", { cache: "no-store" }).then((r) => r.json()),
+      ]);
+      if ((m as { not_admin?: boolean }).not_admin) {
+        setErr("not_admin");
+        return;
+      }
+      setData(m as AdminMetrics);
+      setSeries((s as { series: SeriesPoint[] }).series);
+    } catch {
+      setErr("fetch_failed");
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  useEffect(() => { load(); }, []);
 
   if (err === "not_admin") {
     return (
-      <div className="page-narrow">
-        <h1 className="text-[28px] font-bold tracking-tight">Overview</h1>
-        <p className="text-[13px] text-ink-500 mt-2">
-          Your account isn&apos;t in <code>ADMIN_USER_IDS</code>.
-        </p>
+      <div className="page">
+        <PageHeader
+          eyebrow="Operator"
+          title="Overview"
+          subtitle={
+            <>
+              Your account isn&rsquo;t in <code className="font-mono text-ink bg-surface border border-ink-200 px-1.5 py-0.5 rounded text-[12px]">ADMIN_USER_IDS</code>.
+            </>
+          }
+        />
       </div>
     );
   }
   if (err) {
     return (
-      <div className="page-narrow">
-        <h1 className="text-[28px] font-bold tracking-tight">Overview</h1>
-        <p className="text-[13px] text-red-600 mt-2">Failed to load: {err}</p>
+      <div className="page">
+        <PageHeader
+          eyebrow="Operator"
+          title="Overview"
+          subtitle={<span className="text-[rgb(255_140_140)]">Failed to load: {err}</span>}
+        />
       </div>
     );
   }
 
-  const send30dTotal = series?.reduce((s, p) => s + p.sends, 0) ?? 0;
-  const err30dTotal = series?.reduce((s, p) => s + p.errors, 0) ?? 0;
-  const reply30dTotal = series?.reduce((s, p) => s + p.replies, 0) ?? 0;
-  const signup30dTotal =
-    series?.reduce((s, p) => s + p.signups_free + p.signups_paid, 0) ?? 0;
+  const send30dTotal   = series?.reduce((s, p) => s + p.sends, 0) ?? 0;
+  const err30dTotal    = series?.reduce((s, p) => s + p.errors, 0) ?? 0;
+  const reply30dTotal  = series?.reduce((s, p) => s + p.replies, 0) ?? 0;
+  const signup30dTotal = series?.reduce((s, p) => s + p.signups_free + p.signups_paid, 0) ?? 0;
 
   return (
-    <div className="page-narrow">
-      <div className="flex items-baseline justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-[28px] font-bold tracking-tight">Overview</h1>
-          <p className="text-[13px] text-ink-500 mt-1">
-            Operator-side numbers. Everything live across all tenants.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => window.location.reload()}
-          className="btn-quiet text-[12px]"
-        >
-          Refresh
-        </button>
-      </div>
+    <div className="page">
+      <PageHeader
+        eyebrow="Operator"
+        title={<>Overview <span className="text-ink-500 font-normal">·</span> <span className="text-ink-500 font-normal">all tenants</span></>}
+        subtitle="Cross-tenant numbers. Live, no caching."
+        actions={
+          <button
+            type="button"
+            onClick={load}
+            disabled={refreshing}
+            className="btn-ghost text-[13px]"
+          >
+            {refreshing ? <Spinner /> : <RefreshIcon />}
+            {refreshing ? "Refreshing" : "Refresh"}
+          </button>
+        }
+      />
 
       {!data || !series ? (
-        <p className="text-[13px] text-ink-500 mt-6">Loading…</p>
+        <SkeletonOverview />
       ) : (
-        <div className="space-y-6 mt-6">
-          {/* Top-line stat cards */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Stat label="MRR" value={`$${(data.mrr_cents / 100).toLocaleString()}`} />
-            <Stat label="Paying users" value={data.paying_users.toLocaleString()} />
-            <Stat label="Sends · 24h" value={data.sends_24h.toLocaleString()} />
-            <Stat
+        <div className="space-y-6">
+          {/* Top-line KPIs */}
+          <section className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <KpiCard
+              label="MRR"
+              value={`$${(data.mrr_cents / 100).toLocaleString()}`}
+              tone="hot"
+            />
+            <KpiCard
+              label="Paying users"
+              value={data.paying_users.toLocaleString()}
+            />
+            <KpiCard
+              label="Sends · 24h"
+              value={data.sends_24h.toLocaleString()}
+            />
+            <KpiCard
               label="Error rate · 24h"
               value={`${(data.error_rate_24h * 100).toFixed(1)}%`}
-              tone={data.error_rate_24h > 0.05 ? "warn" : undefined}
+              tone={data.error_rate_24h > 0.05 ? "hot" : "default"}
             />
-          </div>
+          </section>
 
           {/* 30-day sends chart */}
-          <div className="sheet p-4">
-            <div className="flex items-baseline justify-between flex-wrap gap-2">
-              <h2 className="text-[14px] font-semibold">Sends · last 30 days</h2>
-              <div className="flex items-center gap-3">
-                <LegendDot color="#1a1a1a" label={`Sent (${send30dTotal.toLocaleString()})`} />
-                <LegendDot color="#dc2626" label={`Errors (${err30dTotal.toLocaleString()})`} />
-              </div>
-            </div>
-            <div className="mt-3">
-              <StackedBars
-                data={series.map((p) => ({
-                  day: p.day,
-                  values: { sends: p.sends, errors: p.errors },
-                }))}
-                keys={["sends", "errors"]}
-                colors={{ sends: "#1a1a1a", errors: "#dc2626" }}
-              />
-              <DayAxis days={series.map((p) => p.day)} />
-            </div>
-          </div>
+          <Panel
+            title="Sends · last 30 days"
+            legend={
+              <>
+                <LegendDot color={CHART_COLORS.sends}  label={`Sent (${send30dTotal.toLocaleString()})`} />
+                <LegendDot color={CHART_COLORS.errors} label={`Errors (${err30dTotal.toLocaleString()})`} />
+              </>
+            }
+          >
+            <StackedBars
+              data={series.map((p) => ({
+                day: p.day,
+                values: { sends: p.sends, errors: p.errors },
+              }))}
+              keys={["sends", "errors"]}
+              colors={{ sends: CHART_COLORS.sends, errors: CHART_COLORS.errors }}
+            />
+            <DayAxis days={series.map((p) => p.day)} />
+          </Panel>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {/* Signups */}
-            <div className="sheet p-4">
-              <div className="flex items-baseline justify-between flex-wrap gap-2">
-                <h2 className="text-[14px] font-semibold">Signups · last 30 days</h2>
-                <div className="flex items-center gap-3">
-                  <LegendDot color="#94a3b8" label="Free" />
-                  <LegendDot color="#34d399" label="Paid" />
-                </div>
-              </div>
-              <div className="mt-3">
-                <StackedBars
-                  data={series.map((p) => ({
-                    day: p.day,
-                    values: { paid: p.signups_paid, free: p.signups_free },
-                  }))}
-                  keys={["paid", "free"]}
-                  colors={{ free: "#94a3b8", paid: "#34d399" }}
-                  height={120}
-                />
-              </div>
-              <p className="mt-2 text-[12px] text-ink-500">
-                {signup30dTotal.toLocaleString()} signups · {(data.free_to_paid_30d * 100).toFixed(1)}% paid
-              </p>
-            </div>
+            <Panel
+              title="Signups · last 30 days"
+              legend={
+                <>
+                  <LegendDot color={CHART_COLORS.free} label="Free" />
+                  <LegendDot color={CHART_COLORS.paid} label="Paid" />
+                </>
+              }
+              footer={
+                <>
+                  {signup30dTotal.toLocaleString()} signups ·{" "}
+                  <span className="text-ink font-mono">{(data.free_to_paid_30d * 100).toFixed(1)}%</span> paid
+                </>
+              }
+            >
+              <StackedBars
+                data={series.map((p) => ({
+                  day: p.day,
+                  values: { paid: p.signups_paid, free: p.signups_free },
+                }))}
+                keys={["paid", "free"]}
+                colors={{ free: CHART_COLORS.free, paid: CHART_COLORS.paid }}
+                height={120}
+              />
+            </Panel>
 
             {/* Replies */}
-            <div className="sheet p-4">
-              <div className="flex items-baseline justify-between flex-wrap gap-2">
-                <h2 className="text-[14px] font-semibold">Replies · last 30 days</h2>
-                <div className="flex items-center gap-3">
-                  <LegendDot color="#475569" label="All replies" />
-                  <LegendDot color="#34d399" label="Interested" />
-                </div>
-              </div>
-              <div className="mt-3">
-                <StackedBars
-                  data={series.map((p) => ({
-                    day: p.day,
-                    values: {
-                      interested: p.interested,
-                      other: Math.max(0, p.replies - p.interested),
-                    },
-                  }))}
-                  keys={["interested", "other"]}
-                  colors={{ interested: "#34d399", other: "#475569" }}
-                  height={120}
-                />
-              </div>
-              <p className="mt-2 text-[12px] text-ink-500">
-                {reply30dTotal.toLocaleString()} replies in window
-              </p>
-            </div>
+            <Panel
+              title="Replies · last 30 days"
+              legend={
+                <>
+                  <LegendDot color={CHART_COLORS.other}      label="All replies" />
+                  <LegendDot color={CHART_COLORS.interested} label="Interested" />
+                </>
+              }
+              footer={`${reply30dTotal.toLocaleString()} replies in window`}
+            >
+              <StackedBars
+                data={series.map((p) => ({
+                  day: p.day,
+                  values: {
+                    interested: p.interested,
+                    other: Math.max(0, p.replies - p.interested),
+                  },
+                }))}
+                keys={["interested", "other"]}
+                colors={{ interested: CHART_COLORS.interested, other: CHART_COLORS.other }}
+                height={120}
+              />
+            </Panel>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {/* Plan distribution as horizontal bars */}
-            <div className="sheet p-4">
-              <h2 className="text-[14px] font-semibold mb-3">Plan distribution</h2>
+            {/* Plan distribution */}
+            <Panel title="Plan distribution">
               <PlanBars counts={data.plan_counts} />
-            </div>
+            </Panel>
 
-            {/* Errors by class — sparkline-light table */}
-            <div className="sheet p-4">
-              <h2 className="text-[14px] font-semibold mb-3">Errors by class · 24h</h2>
+            {/* Errors by class */}
+            <Panel title="Errors by class · 24h">
               {Object.keys(data.error_by_class_24h).length === 0 ? (
-                <p className="text-[13px] text-ink-500">No errors in the last 24h.</p>
+                <div className="flex items-center gap-2 py-1 text-[13px] text-[rgb(110_231_183)]">
+                  <span
+                    className="inline-block w-1.5 h-1.5 rounded-full"
+                    style={{ background: "rgb(16 185 129)", boxShadow: "0 0 8px rgb(16 185 129 / 0.5)" }}
+                  />
+                  No errors in the last 24h.
+                </div>
               ) : (
-                <table className="w-full text-[13px]">
-                  <tbody>
-                    {Object.entries(data.error_by_class_24h)
-                      .sort((a, b) => b[1] - a[1])
-                      .slice(0, 8)
-                      .map(([cls, count]) => (
-                        <tr key={cls} className="border-b border-ink-100 last:border-0">
-                          <td className="py-1.5 font-mono text-[12px]">{cls}</td>
-                          <td className="py-1.5 text-right font-mono">{count}</td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
+                <div className="space-y-1">
+                  {Object.entries(data.error_by_class_24h)
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 8)
+                    .map(([cls, count]) => (
+                      <div
+                        key={cls}
+                        className="flex items-center justify-between py-1.5 px-2 rounded hover:bg-hover transition-colors"
+                      >
+                        <code className="font-mono text-[12.5px] text-ink-700">{cls}</code>
+                        <span className="font-mono text-[13px] text-ink tabular-nums">
+                          {count.toLocaleString()}
+                        </span>
+                      </div>
+                    ))}
+                </div>
               )}
-            </div>
+            </Panel>
           </div>
 
           {/* Recent signups */}
-          <div className="sheet p-4">
-            <h2 className="text-[14px] font-semibold mb-3">Recent signups</h2>
+          <Panel title="Recent signups">
             {data.recent_signups.length === 0 ? (
               <p className="text-[13px] text-ink-500">No signups yet.</p>
             ) : (
-              <table className="w-full text-[13px]">
-                <thead>
-                  <tr className="text-[12px] text-ink-500 text-left">
-                    <th className="py-1.5 font-medium">User</th>
-                    <th className="py-1.5 font-medium">Plan</th>
-                    <th className="py-1.5 font-medium">Status</th>
-                    <th className="py-1.5 font-medium">When</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.recent_signups.map((s) => (
-                    <tr key={s.user_id} className="border-b border-ink-100 last:border-0">
-                      <td className="py-1.5 font-mono text-[11px] truncate max-w-[260px]">
-                        <a
-                          href={`/admin/users/${s.user_id}`}
-                          className="hover:underline"
-                        >
-                          {s.user_id}
-                        </a>
-                      </td>
-                      <td className="py-1.5 capitalize">{s.plan_id}</td>
-                      <td className="py-1.5 capitalize">{s.status}</td>
-                      <td className="py-1.5 text-ink-500">
-                        {new Date(s.created_at).toLocaleString()}
-                      </td>
+              <div className="overflow-x-auto -mx-4 sm:mx-0">
+                <table className="w-full text-[13px]">
+                  <thead>
+                    <tr className="text-left">
+                      <ColHead>User</ColHead>
+                      <ColHead>Plan</ColHead>
+                      <ColHead>Status</ColHead>
+                      <ColHead className="text-right">When</ColHead>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {data.recent_signups.map((s) => {
+                      const tone = PLAN_TONE[s.plan_id] ?? PLAN_TONE.free;
+                      return (
+                        <tr key={s.user_id} className="border-t border-ink-100 hover:bg-hover transition-colors">
+                          <td className="py-2 px-2">
+                            <Link
+                              href={`/admin/users/${s.user_id}`}
+                              className="font-mono text-[11.5px] text-ink-600 hover:text-ink truncate block max-w-[280px]"
+                            >
+                              {s.user_id}
+                            </Link>
+                          </td>
+                          <td className="py-2 px-2">
+                            <span
+                              className="inline-flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-wider px-2 py-0.5 rounded-full"
+                              style={{ background: tone.bg, color: tone.text }}
+                            >
+                              <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: tone.dot }} />
+                              {s.plan_id}
+                            </span>
+                          </td>
+                          <td className="py-2 px-2">
+                            <StatusPill status={s.status} />
+                          </td>
+                          <td className="py-2 px-2 text-right font-mono text-[11.5px] text-ink-500">
+                            {relative(s.created_at)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             )}
-          </div>
+          </Panel>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Stat label="Sends · 7d" value={data.sends_7d.toLocaleString()} />
-            <Stat label="Errors · 7d" value={data.errors_7d.toLocaleString()} />
-            <Stat label="Signups · 7d" value={data.signups_7d.toLocaleString()} />
-            <Stat
+          {/* 7-day secondary KPIs */}
+          <section className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <KpiCard label="Sends · 7d"    value={data.sends_7d.toLocaleString()} />
+            <KpiCard label="Errors · 7d"   value={data.errors_7d.toLocaleString()} tone={data.errors_7d > 0 ? "hot" : "default"} />
+            <KpiCard label="Signups · 7d"  value={data.signups_7d.toLocaleString()} />
+            <KpiCard
               label="Free → paid · 30d"
-              value={`${(data.free_to_paid_30d * 100).toFixed(1)}%`}
+              value={`${(data.free_to_paid_30d * 100).toFixed(1)}`}
+              unit="%"
+              tone="hot"
             />
-          </div>
+          </section>
         </div>
       )}
     </div>
   );
 }
 
-function Stat({
-  label,
-  value,
-  tone,
+/* ----------------------------------------------------------------------- */
+
+function Panel({
+  title,
+  legend,
+  footer,
+  children,
 }: {
-  label: string;
-  value: string;
-  tone?: "warn";
+  title: string;
+  legend?: React.ReactNode;
+  footer?: React.ReactNode;
+  children: React.ReactNode;
 }) {
   return (
-    <div className="sheet p-4">
-      <div className="text-[11px] uppercase tracking-wide text-ink-500">{label}</div>
-      <div
-        className={
-          "text-[22px] font-bold mt-1 " + (tone === "warn" ? "text-red-600" : "text-ink")
-        }
-      >
-        {value}
+    <section className="rounded-xl border border-ink-200 bg-paper p-4 sm:p-5">
+      <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4">
+        <h2 className="text-[14px] font-semibold tracking-[-0.01em] text-ink">{title}</h2>
+        {legend && <div className="flex items-center gap-3 text-[11.5px] text-ink-500">{legend}</div>}
       </div>
-    </div>
+      {children}
+      {footer && (
+        <p className="mt-3 text-[12px] text-ink-500">{footer}</p>
+      )}
+    </section>
+  );
+}
+
+function ColHead({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return (
+    <th className={`font-mono text-[10.5px] uppercase tracking-wider text-ink-500 font-medium pb-2 px-2 ${className}`}>
+      {children}
+    </th>
   );
 }
 
@@ -314,7 +388,7 @@ function DayAxis({ days }: { days: string[] }) {
   const mid = days[Math.floor(days.length / 2)];
   const last = days[days.length - 1];
   return (
-    <div className="flex justify-between mt-1 text-[10px] text-ink-500 font-mono">
+    <div className="flex justify-between mt-1.5 text-[10.5px] text-ink-500 font-mono">
       <span>{first.slice(5)}</span>
       <span>{mid.slice(5)}</span>
       <span>{last.slice(5)}</span>
@@ -326,23 +400,26 @@ function PlanBars({ counts }: { counts: Record<string, number> }) {
   const total = Object.values(counts).reduce((a, b) => a + b, 0) || 1;
   const order = ["free", "starter", "growth", "scale"];
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       {order.map((p) => {
         const c = counts[p] ?? 0;
         const pct = (c / total) * 100;
+        const tone = PLAN_TONE[p] ?? PLAN_TONE.free;
         return (
           <div key={p}>
-            <div className="flex items-center justify-between text-[12px] text-ink-500">
-              <span className="capitalize">{p}</span>
-              <span className="font-mono">{c.toLocaleString()}</span>
+            <div className="flex items-center justify-between text-[12.5px] mb-1">
+              <span className="inline-flex items-center gap-2 capitalize text-ink">
+                <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: tone.dot }} />
+                {p}
+              </span>
+              <span className="font-mono text-ink-500 tabular-nums">
+                {c.toLocaleString()} <span className="text-ink-400">· {pct.toFixed(1)}%</span>
+              </span>
             </div>
-            <div className="mt-0.5 h-1.5 bg-ink-100 rounded-sm overflow-hidden">
+            <div className="h-1.5 bg-ink-100 rounded-full overflow-hidden">
               <div
-                className="h-full"
-                style={{
-                  width: `${pct}%`,
-                  background: PLAN_COLORS[p],
-                }}
+                className="h-full rounded-full transition-all"
+                style={{ width: `${pct}%`, background: tone.dot }}
               />
             </div>
           </div>
@@ -350,4 +427,49 @@ function PlanBars({ counts }: { counts: Record<string, number> }) {
       })}
     </div>
   );
+}
+
+function SkeletonOverview() {
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="h-24 rounded-xl bg-ink-100 animate-pulse" />
+        ))}
+      </div>
+      <div className="h-64 rounded-xl bg-ink-100 animate-pulse" />
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="h-44 rounded-xl bg-ink-100 animate-pulse" />
+        <div className="h-44 rounded-xl bg-ink-100 animate-pulse" />
+      </div>
+    </div>
+  );
+}
+
+function Spinner() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" className="animate-spin" aria-hidden>
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2.5" fill="none" />
+      <path d="M12 3a9 9 0 0 1 9 9" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" fill="none" />
+    </svg>
+  );
+}
+function RefreshIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M3 12a9 9 0 0 1 15.5-6.3L21 8M21 4v4h-4M21 12a9 9 0 0 1-15.5 6.3L3 16M3 20v-4h4" />
+    </svg>
+  );
+}
+
+function relative(dt: string): string {
+  const diff = Date.now() - new Date(dt).getTime();
+  const m = Math.round(diff / 60_000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const days = Math.round(h / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(dt).toLocaleDateString();
 }

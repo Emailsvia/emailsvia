@@ -29,7 +29,6 @@ export default function ThemeToggle({ variant = "sidebar" }: { variant?: "sideba
     applyTheme(next);
   }
 
-  const icon = theme;
   const label = theme === "auto" ? "Auto" : theme === "dark" ? "Dark" : "Light";
 
   if (variant === "compact") {
@@ -37,11 +36,12 @@ export default function ThemeToggle({ variant = "sidebar" }: { variant?: "sideba
       <button
         type="button"
         onClick={cycle}
-        className="btn-quiet px-2"
-        title={`Theme: ${label}`}
+        className="flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-[12.5px] text-ink-600 hover:text-ink hover:bg-hover transition-colors cursor-pointer"
+        title={`Theme: ${label} — click to cycle`}
         aria-label={`Toggle theme (currently ${label})`}
       >
-        <ThemeIcon name={icon} />
+        <ThemeIcon name={theme} className="w-3.5 h-3.5" />
+        <span>{mounted ? label : "Auto"}</span>
       </button>
     );
   }
@@ -50,37 +50,38 @@ export default function ThemeToggle({ variant = "sidebar" }: { variant?: "sideba
     <button
       type="button"
       onClick={cycle}
-      className="side-link w-full justify-between group"
+      className="flex items-center justify-between w-full px-2 py-1.5 rounded-md text-[13.5px] text-ink-700 hover:text-ink hover:bg-hover transition-colors cursor-pointer group"
       title="Click to cycle: Light → Dark → Auto"
     >
       <span className="flex items-center gap-2">
-        <ThemeIcon name={icon} />
+        <ThemeIcon name={theme} className="w-4 h-4" />
         <span>Theme</span>
       </span>
-      <span className="text-[12px] text-ink-500 group-hover:text-ink">
+      <span className="font-mono text-[11px] text-ink-500 group-hover:text-ink transition-colors">
         {mounted ? label : "Auto"}
       </span>
     </button>
   );
 }
 
-function ThemeIcon({ name }: { name: Theme }) {
-  if (name === "light")
+function ThemeIcon({ name, className = "" }: { name: Theme; className?: string }) {
+  if (name === "light") {
     return (
-      <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+      <svg className={`${className} shrink-0`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden>
         <circle cx="12" cy="12" r="4" />
         <path d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.4 1.4M17.6 17.6L19 19M5 19l1.4-1.4M17.6 6.4L19 5" />
       </svg>
     );
-  if (name === "dark")
+  }
+  if (name === "dark") {
     return (
-      <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <svg className={`${className} shrink-0`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
         <path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z" />
       </svg>
     );
-  // auto — half-moon/sun
+  }
   return (
-    <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <svg className={`${className} shrink-0`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
       <circle cx="12" cy="12" r="9" />
       <path d="M12 3a9 9 0 010 18" fill="currentColor" />
     </svg>

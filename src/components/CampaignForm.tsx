@@ -623,8 +623,15 @@ export default function CampaignForm({
                   minHeight={420}
                 />
                 {/\{\{\s*ai:/.test(template) && (
-                  <div className="mt-2 px-3 py-2 rounded-md text-[12px] bg-amber-50 text-amber-700 border border-amber-200">
-                    <b>AI tag detected.</b> Each <code className="font-mono">{`{{ai:...}}`}</code> calls
+                  <div
+                    className="mt-2 px-3 py-2 rounded-lg text-[12.5px] border"
+                    style={{
+                      borderColor: "rgb(255 159 67 / 0.30)",
+                      background: "rgb(255 159 67 / 0.06)",
+                      color: "rgb(255 180 110)",
+                    }}
+                  >
+                    <b className="text-ink">AI tag detected.</b> Each <code className="font-mono">{`{{ai:...}}`}</code> calls
                     Claude Haiku per recipient — Growth/Scale only. Free / Starter campaigns
                     skip the AI step and the tag becomes empty text.
                   </div>
@@ -761,7 +768,13 @@ export default function CampaignForm({
                         <span className="font-display text-2xl font-medium">№{String(s.step_number).padStart(2, "0")}</span>
                         <span className="kicker">Follow-up {s.step_number}</span>
                       </div>
-                      <button type="button" className="btn-quiet text-xs text-red-700 hover:bg-red-50" onClick={() => removeStep(i)}>Remove</button>
+                      <button
+                        type="button"
+                        className="btn-quiet text-xs text-[rgb(252_165_165)] hover:text-[rgb(255_140_140)]"
+                        onClick={() => removeStep(i)}
+                      >
+                        Remove
+                      </button>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-[120px,1fr] gap-x-6 gap-y-4">
                       <div>
@@ -857,7 +870,14 @@ export default function CampaignForm({
               {testBusy ? "Sending…" : "Send test"}
             </button>
             {testMsg && (
-              <p className={`text-[12px] mt-2 ${testMsg.includes("✓") ? "text-emerald-600" : "text-red-600"}`}>{testMsg}</p>
+              <p
+                className="text-[12.5px] mt-2"
+                style={{
+                  color: testMsg.includes("✓") ? "rgb(110 231 183)" : "rgb(252 165 165)",
+                }}
+              >
+                {testMsg}
+              </p>
             )}
           </div>
 
@@ -967,7 +987,7 @@ export default function CampaignForm({
                         type="button"
                         onClick={() => removeExisting(a.path)}
                         disabled={attachmentBusy}
-                        className="btn-quiet !px-2 !py-1 text-[12px] text-red-600 hover:bg-red-50 hover:text-red-700 shrink-0"
+                        className="btn-quiet !px-2 !py-1 text-[12px] text-[rgb(252_165_165)] hover:text-[rgb(255_140_140)] shrink-0"
                         aria-label="Remove attachment"
                       >
                         <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 6l12 12M6 18L18 6" /></svg>
@@ -1041,18 +1061,34 @@ export default function CampaignForm({
           <div className="sheet p-6">
             <div className="flex items-baseline justify-between">
               <div className="kicker">Deliverability</div>
-              <span className={`text-xs font-mono ${sLevel === "clean" ? "text-emerald-700" : sLevel === "caution" ? "text-amber-700" : "text-red-700"}`}>
+              <span
+                className="text-xs font-mono uppercase tracking-wider"
+                style={{
+                  color: sLevel === "clean"
+                    ? "rgb(110 231 183)"
+                    : sLevel === "caution"
+                      ? "rgb(255 180 110)"
+                      : "rgb(252 165 165)",
+                }}
+              >
                 {sLevel}
               </span>
             </div>
             <div className="mt-3 flex items-center gap-3">
-              <div className="flex-1 h-[3px] bg-ink-100 relative">
+              <div className="flex-1 h-1 rounded-full bg-ink-100 overflow-hidden">
                 <div
-                  className={`h-full transition-all ${sLevel === "clean" ? "bg-emerald-500" : sLevel === "caution" ? "bg-amber-500" : "bg-red-500"}`}
-                  style={{ width: `${Math.min(100, Math.max(6, spam.score))}%` }}
+                  className="h-full rounded-full transition-all"
+                  style={{
+                    width: `${Math.min(100, Math.max(6, spam.score))}%`,
+                    background: sLevel === "clean"
+                      ? "rgb(16 185 129)"
+                      : sLevel === "caution"
+                        ? "linear-gradient(90deg, rgb(255 99 99), rgb(255 159 67))"
+                        : "rgb(239 68 68)",
+                  }}
                 />
               </div>
-              <div className="text-xs font-mono text-ink-500 w-10 text-right">{spam.score}/100</div>
+              <div className="text-xs font-mono text-ink-500 w-10 text-right tabular-nums">{spam.score}/100</div>
             </div>
             {spam.warnings.length > 0 && (
               <ul className="mt-3 text-xs text-ink-600 space-y-1 list-disc pl-4">

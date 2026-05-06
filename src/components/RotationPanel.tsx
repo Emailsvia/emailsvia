@@ -108,7 +108,7 @@ export default function RotationPanel({
                 <div className="truncate text-[11px] text-ink-500 font-mono">
                   {r.sender?.email}
                   {r.sender?.auth_method === "oauth" && r.sender.oauth_status !== "ok" && (
-                    <span className="ml-1 text-amber-600">· revoked</span>
+                    <span className="ml-1 text-[rgb(255_180_110)]">· revoked</span>
                   )}
                 </div>
               </div>
@@ -153,7 +153,7 @@ export default function RotationPanel({
         </p>
       )}
 
-      {err && <p className="mt-2 text-[12px] text-red-600">{err}</p>}
+      {err && <p className="mt-2 text-[12px] text-[rgb(255_140_140)]">{err}</p>}
     </div>
   );
 }

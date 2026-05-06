@@ -8,9 +8,9 @@ export const metadata = {
 export default function TermsPage() {
   return (
     <MarketingShell>
-      <article className="mx-auto max-w-3xl px-6 py-16 text-[14px] leading-relaxed text-ink-700">
-        <h1 className="text-[32px] font-bold tracking-tight text-ink mb-2">Terms of Service</h1>
-        <p className="text-[12px] text-ink-500 mb-8">Last updated: 2026-05-04</p>
+      <article className="m-prose mx-auto max-w-3xl px-6 py-16">
+        <h1>Terms of Service</h1>
+        <p className="updated">Last updated: 2026-05-04</p>
 
         <Section title="Agreement">
           By creating an EmailsVia account or sending email through the service you agree to
@@ -60,7 +60,7 @@ export default function TermsPage() {
             <li>
               Refunds are not automatic. If something goes seriously wrong (we charged you while
               the service was down, etc.) email{" "}
-              <a className="text-ink underline" href="mailto:hello@emailsvia.com">hello@emailsvia.com</a>
+              <a className="" href="mailto:hello@emailsvia.com">hello@emailsvia.com</a>
               {" "}and we&rsquo;ll sort it out.
             </li>
             <li>
@@ -96,7 +96,7 @@ export default function TermsPage() {
         </Section>
 
         <Section title="Contact">
-          <a className="text-ink underline" href="mailto:hello@emailsvia.com">hello@emailsvia.com</a>
+          <a className="" href="mailto:hello@emailsvia.com">hello@emailsvia.com</a>
         </Section>
       </article>
     </MarketingShell>
@@ -105,8 +105,8 @@ export default function TermsPage() {
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="mb-8">
-      <h2 className="text-[18px] font-semibold text-ink mt-2 mb-2">{title}</h2>
+    <section>
+      <h2>{title}</h2>
       {children}
     </section>
   );

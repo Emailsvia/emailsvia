@@ -204,7 +204,7 @@ export default function DateTimePicker({ value, onChange, placeholder = "Pick a 
 
           {/* actions */}
           <div className="mt-3 pt-3 border-t border-ink-100 flex items-center justify-between">
-            <button type="button" onClick={clear} className="btn-quiet text-[12px] text-red-600 hover:bg-red-50 hover:text-red-700">Clear</button>
+            <button type="button" onClick={clear} className="btn-quiet text-[12px] text-[rgb(252_165_165)] hover:text-[rgb(255_140_140)]">Clear</button>
             <div className="flex gap-1.5">
               <button type="button" onClick={() => setOpen(false)} className="btn-quiet text-[12px]">Cancel</button>
               <button type="button" onClick={apply} disabled={!selectedDate} className="btn-accent text-[12px] !py-1 !px-3">Apply</button>

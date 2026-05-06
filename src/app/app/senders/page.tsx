@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
+import PageHeader from "@/components/app/PageHeader";
+import EmptyState from "@/components/app/EmptyState";
 
 type Sender = {
   id: string;
@@ -39,13 +41,11 @@ export default function SendersPage() {
   }
   useEffect(() => {
     load();
-    // OAuth callback redirects here with either ?connected=email or ?oauth_error=...
     const params = new URLSearchParams(window.location.search);
     const connected = params.get("connected");
     const oauthErr = params.get("oauth_error");
     if (connected) {
       setFlash({ kind: "ok", msg: `Connected ${connected} via Google OAuth.` });
-      // Clean the URL so a refresh doesn't re-trigger the toast.
       window.history.replaceState({}, "", "/app/senders");
     } else if (oauthErr) {
       setFlash({ kind: "err", msg: `Couldn't connect: ${oauthErr}` });
@@ -124,85 +124,141 @@ export default function SendersPage() {
   return (
     <AppShell>
       <div className="page-narrow">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="text-[28px] font-bold tracking-tight">Senders</h1>
-            <p className="text-[13px] text-ink-500 mt-1">Gmail accounts authorized to send campaigns.</p>
-          </div>
-          {!adding && (
-            <div className="flex items-center gap-2">
-              <button className="btn-accent" onClick={connectGoogle}>Connect Gmail</button>
-              <button className="btn-ghost" onClick={() => setAdding(true)}>Use app password</button>
-            </div>
-          )}
-        </div>
+        <PageHeader
+          eyebrow="Workspace"
+          title="Senders"
+          subtitle="The Gmail accounts authorized to send your campaigns. Reputation lives here, not on our infrastructure."
+          actions={
+            !adding && (
+              <>
+                <button className="btn-ghost" onClick={() => setAdding(true)}>Use app password</button>
+                <button className="btn-accent" onClick={connectGoogle}>
+                  <GoogleGlyph />
+                  Connect Gmail
+                </button>
+              </>
+            )
+          }
+        />
 
-        {flash && (
-          <div
-            className={
-              "mb-4 px-3 py-2 rounded-md text-[13px] " +
-              (flash.kind === "ok"
-                ? "bg-green-50 text-green-700"
-                : "bg-red-50 text-red-700")
-            }
-          >
-            {flash.msg}
-          </div>
-        )}
+        {flash && <FlashMessage kind={flash.kind} message={flash.msg} onDismiss={() => setFlash(null)} />}
 
         {adding && (
-          <form onSubmit={onAdd} className="sheet p-5 mb-6">
-            <h2 className="text-[16px] font-semibold mb-1">New sender</h2>
-            <p className="text-[13px] text-ink-500 mb-5">
-              Use an <b>app password</b>, not your Gmail login. Generate at{" "}
-              <a className="btn-link" href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">
+          <form
+            onSubmit={onAdd}
+            className="rounded-xl border border-ink-200 bg-paper p-5 sm:p-6 mb-6"
+          >
+            <h2 className="text-[16px] font-semibold tracking-[-0.01em] mb-1">Add sender · app password</h2>
+            <p className="text-[13px] text-ink-600 mb-5 leading-relaxed">
+              Use an <b className="text-ink">app password</b>, not your Gmail login. Generate at{" "}
+              <a
+                className="underline decoration-[rgb(255_99_99/0.5)] underline-offset-[3px] hover:text-[rgb(255_140_140)] transition-colors"
+                href="https://myaccount.google.com/apppasswords"
+                target="_blank"
+                rel="noreferrer"
+              >
                 myaccount.google.com/apppasswords
-              </a>
-              . 2FA must be on.
+              </a>. 2FA must be on.
             </p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="label-cap">Label</label>
-                <input className="field-boxed" placeholder="Personal · Work" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} required />
+                <input
+                  className="field-boxed"
+                  placeholder="Personal · Work"
+                  value={form.label}
+                  onChange={(e) => setForm({ ...form, label: e.target.value })}
+                  required
+                />
               </div>
               <div>
                 <label className="label-cap">Display name</label>
-                <input className="field-boxed" placeholder="Your full name" value={form.from_name} onChange={(e) => setForm({ ...form, from_name: e.target.value })} />
+                <input
+                  className="field-boxed"
+                  placeholder="Your full name"
+                  value={form.from_name}
+                  onChange={(e) => setForm({ ...form, from_name: e.target.value })}
+                />
               </div>
               <div>
                 <label className="label-cap">Gmail address</label>
-                <input className="field-boxed" type="email" placeholder="you@gmail.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required />
+                <input
+                  className="field-boxed"
+                  type="email"
+                  placeholder="you@gmail.com"
+                  value={form.email}
+                  onChange={(e) => setForm({ ...form, email: e.target.value })}
+                  required
+                />
               </div>
               <div>
                 <label className="label-cap">App password</label>
-                <input className="field-boxed font-mono" placeholder="xxxx xxxx xxxx xxxx" value={form.app_password} onChange={(e) => setForm({ ...form, app_password: e.target.value })} required />
-                <p className="text-[11px] text-ink-500 mt-1.5">16 lowercase letters Google generates — not your login password.</p>
+                <input
+                  className="field-boxed font-mono"
+                  placeholder="xxxx xxxx xxxx xxxx"
+                  value={form.app_password}
+                  onChange={(e) => setForm({ ...form, app_password: e.target.value })}
+                  required
+                />
+                <p className="text-[11.5px] text-ink-500 mt-1.5">
+                  16 lowercase letters Google generates — not your login password.
+                </p>
               </div>
             </div>
 
             <div className="mt-5 space-y-2.5">
               <label className="flex items-center gap-2 text-[13px] cursor-pointer w-fit">
-                <input type="checkbox" checked={form.is_default} onChange={(e) => setForm({ ...form, is_default: e.target.checked })} className="w-4 h-4 accent-accent" />
+                <input
+                  type="checkbox"
+                  checked={form.is_default}
+                  onChange={(e) => setForm({ ...form, is_default: e.target.checked })}
+                  className="w-4 h-4 accent-accent"
+                />
                 <span>Make this the default sender for new campaigns</span>
               </label>
               <label className="flex items-start gap-2 text-[13px] cursor-pointer">
-                <input type="checkbox" checked={form.warmup_enabled} onChange={(e) => setForm({ ...form, warmup_enabled: e.target.checked })} className="w-4 h-4 mt-0.5 accent-accent" />
+                <input
+                  type="checkbox"
+                  checked={form.warmup_enabled}
+                  onChange={(e) => setForm({ ...form, warmup_enabled: e.target.checked })}
+                  className="w-4 h-4 mt-0.5 accent-accent"
+                />
                 <div>
                   <div>Enable 14-day warmup</div>
-                  <div className="text-[11px] text-ink-500 mt-0.5">Ramps from 10/day up to 400/day over 14 days. Essential for brand new Gmail accounts — without it they get flagged as spam fast.</div>
+                  <div className="text-[11.5px] text-ink-500 mt-0.5 leading-relaxed">
+                    Ramps from 10/day up to 400/day over 14 days. Brand-new Gmail accounts get
+                    flagged fast without it.
+                  </div>
                 </div>
               </label>
             </div>
 
             {err && (
-              <div className="mt-4 bg-red-50 text-red-700 text-[13px] px-3 py-2 rounded-md">
-                {err}
+              <div
+                className="mt-4 px-3 py-2 rounded-lg text-[13px] border flex items-start gap-2"
+                style={{
+                  borderColor: "rgb(255 99 99 / 0.30)",
+                  background: "rgb(255 99 99 / 0.06)",
+                  color: "rgb(255 140 140)",
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" className="mt-0.5 shrink-0" aria-hidden>
+                  <circle cx="12" cy="12" r="10" />
+                  <path d="M12 8v4M12 16h.01" />
+                </svg>
+                <span>{err}</span>
               </div>
             )}
 
             <div className="flex justify-end gap-2 mt-5 pt-4 border-t border-ink-100">
-              <button type="button" className="btn-quiet" onClick={() => { setAdding(false); setErr(null); }}>Cancel</button>
+              <button
+                type="button"
+                className="btn-quiet"
+                onClick={() => { setAdding(false); setErr(null); }}
+              >
+                Cancel
+              </button>
               <button type="submit" disabled={saving} className="btn-accent">
                 {saving ? "Verifying…" : "Add & verify"}
               </button>
@@ -210,25 +266,38 @@ export default function SendersPage() {
           </form>
         )}
 
-        {senders === null && <p className="text-[13px] text-ink-500">Loading…</p>}
+        {senders === null && <SkeletonList />}
 
         {senders?.length === 0 && !adding && (
-          <div className="text-center py-16 border border-dashed border-ink-200 rounded-lg">
-            <div className="text-[14px] font-medium text-ink mb-1">No senders yet</div>
-            <p className="text-[13px] text-ink-500 mb-4">Connect a Gmail account to start sending.</p>
-            <div className="flex items-center justify-center gap-2">
-              <button onClick={connectGoogle} className="btn-accent">Connect Gmail</button>
-              <button onClick={() => setAdding(true)} className="btn-ghost">Use app password</button>
-            </div>
-          </div>
+          <EmptyState
+            icon={
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M3 7l9 6 9-6M3 7v10a2 2 0 002 2h14a2 2 0 002-2V7M3 7l2-2h14l2 2" />
+              </svg>
+            }
+            title="No senders yet"
+            body="Connect a Gmail to start sending campaigns from your own inbox. Or use an app password if your org blocks OAuth."
+            action={
+              <div className="flex items-center gap-2 flex-wrap justify-center">
+                <button className="btn-ghost" onClick={() => setAdding(true)}>Use app password</button>
+                <button className="btn-accent" onClick={connectGoogle}>
+                  <GoogleGlyph />
+                  Connect Gmail
+                </button>
+              </div>
+            }
+          />
         )}
 
         {senders && senders.length > 0 && (
-          <div className="sheet overflow-hidden">
-            {senders.map((s) => (
-              <div key={s.id} className="border-b border-ink-100 last:border-b-0">
+          <div className="rounded-xl border border-ink-200 bg-paper overflow-hidden">
+            {senders.map((s, i) => (
+              <div
+                key={s.id}
+                className={i < senders.length - 1 ? "border-b border-ink-100" : ""}
+              >
                 {editingId === s.id ? (
-                  <div className="px-4 py-4 bg-surface space-y-3">
+                  <div className="px-4 sm:px-5 py-4 bg-surface space-y-3">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <div>
                         <label className="label-cap">Label</label>
@@ -250,50 +319,30 @@ export default function SendersPage() {
                       </div>
                     </div>
                     <div className="text-[12px] text-ink-500">
-                      Email <span className="font-mono">{s.email}</span> can't be changed. Delete and re-add to switch accounts.
+                      Email <span className="font-mono text-ink-700">{s.email}</span> can&rsquo;t be changed.
+                      Delete and re-add to switch accounts.
                     </div>
                     <div className="flex justify-end gap-2">
-                      <button className="btn-quiet text-[12px]" onClick={() => setEditingId(null)}>Cancel</button>
-                      <button className="btn-accent text-[12px]" disabled={editSaving || !editForm.label.trim()} onClick={() => saveEdit(s.id)}>
+                      <button className="btn-quiet text-[12.5px]" onClick={() => setEditingId(null)}>
+                        Cancel
+                      </button>
+                      <button
+                        className="btn-accent text-[12.5px]"
+                        disabled={editSaving || !editForm.label.trim()}
+                        onClick={() => saveEdit(s.id)}
+                      >
                         {editSaving ? "Saving…" : "Save"}
                       </button>
                     </div>
                   </div>
                 ) : (
-                  <div className="flex items-center justify-between gap-4 px-4 py-3 hover:bg-hover transition-colors">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-[14px] font-medium truncate">{s.label}</span>
-                        {s.is_default && <span className="pill-live">default</span>}
-                        {s.auth_method === "oauth" ? (
-                          <span className="pill-done">OAuth</span>
-                        ) : (
-                          <span className="pill-draft">app password</span>
-                        )}
-                        {s.auth_method === "oauth" && s.oauth_status === "revoked" && (
-                          <span className="pill-pause">revoked — reconnect</span>
-                        )}
-                        {(() => {
-                          const w = warmupStatus(s);
-                          if (!w) return null;
-                          return w.done
-                            ? <span className="pill-done">warmup done</span>
-                            : <span className="pill-pause">warmup day {w.day}/14 · {w.cap}/day</span>;
-                        })()}
-                      </div>
-                      <div className="text-[13px] text-ink-500 truncate mt-0.5">
-                        {s.from_name ? <>{s.from_name} <span className="text-ink-400">&lt;{s.email}&gt;</span></> : s.email}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      {s.auth_method === "oauth" && s.oauth_status === "revoked" && (
-                        <button className="btn-quiet text-[12px]" onClick={connectGoogle}>Reconnect</button>
-                      )}
-                      <button className="btn-quiet text-[12px]" onClick={() => startEdit(s)}>Edit</button>
-                      {!s.is_default && <button className="btn-quiet text-[12px]" onClick={() => setDefault(s.id)}>Set default</button>}
-                      <button className="btn-quiet text-[12px] text-red-600 hover:bg-red-50 hover:text-red-700" onClick={() => remove(s.id)}>Delete</button>
-                    </div>
-                  </div>
+                  <SenderRow
+                    sender={s}
+                    onConnect={connectGoogle}
+                    onEdit={() => startEdit(s)}
+                    onSetDefault={() => setDefault(s.id)}
+                    onDelete={() => remove(s.id)}
+                  />
                 )}
               </div>
             ))}
@@ -301,5 +350,192 @@ export default function SendersPage() {
         )}
       </div>
     </AppShell>
+  );
+}
+
+/* ----------------------------------------------------------------------- */
+
+function SenderRow({
+  sender,
+  onConnect,
+  onEdit,
+  onSetDefault,
+  onDelete,
+}: {
+  sender: Sender;
+  onConnect: () => void;
+  onEdit: () => void;
+  onSetDefault: () => void;
+  onDelete: () => void;
+}) {
+  const w = warmupStatus(sender);
+  const isOauth = sender.auth_method === "oauth";
+  const isRevoked = isOauth && sender.oauth_status === "revoked";
+
+  return (
+    <div className="group flex items-center justify-between gap-4 px-4 sm:px-5 py-4 hover:bg-hover transition-colors">
+      <div className="flex items-center gap-3 min-w-0 flex-1">
+        {/* Avatar */}
+        <span
+          className="grid place-items-center w-9 h-9 rounded-lg shrink-0"
+          style={{
+            background: isRevoked
+              ? "rgb(239 68 68 / 0.10)"
+              : isOauth
+                ? "rgb(16 185 129 / 0.10)"
+                : "rgb(255 159 67 / 0.10)",
+            color: isRevoked
+              ? "rgb(252 165 165)"
+              : isOauth
+                ? "rgb(110 231 183)"
+                : "rgb(255 180 110)",
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M3 7l9 6 9-6M3 7v10a2 2 0 002 2h14a2 2 0 002-2V7M3 7l2-2h14l2 2" />
+          </svg>
+        </span>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[14px] font-medium text-ink truncate">{sender.label}</span>
+            {sender.is_default && (
+              <Tag tone="hot">default</Tag>
+            )}
+            {isOauth ? (
+              <Tag tone="ok">OAuth</Tag>
+            ) : (
+              <Tag tone="warn">app pw</Tag>
+            )}
+            {isRevoked && <Tag tone="bad">revoked</Tag>}
+            {w && (w.done ? <Tag tone="ok">warmup done</Tag> : <Tag tone="warn">warmup d{w.day}/14 · {w.cap}/d</Tag>)}
+          </div>
+          <div className="text-[13px] text-ink-600 truncate mt-0.5">
+            {sender.from_name ? (
+              <>
+                {sender.from_name}
+                <span className="text-ink-400 font-mono"> &lt;{sender.email}&gt;</span>
+              </>
+            ) : (
+              <span className="font-mono text-ink-500">{sender.email}</span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-1 shrink-0">
+        {isRevoked && (
+          <button className="btn-accent text-[12.5px] py-1.5 px-3" onClick={onConnect}>
+            Reconnect
+          </button>
+        )}
+        <button className="btn-quiet text-[12.5px]" onClick={onEdit}>Edit</button>
+        {!sender.is_default && (
+          <button className="btn-quiet text-[12.5px]" onClick={onSetDefault}>
+            Set default
+          </button>
+        )}
+        <button
+          className="btn-quiet text-[12.5px] text-[rgb(252_165_165)] hover:text-[rgb(255_140_140)]"
+          onClick={onDelete}
+        >
+          Delete
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Tag({ tone, children }: { tone: "ok" | "warn" | "bad" | "hot"; children: React.ReactNode }) {
+  const styles = {
+    ok:   { bg: "rgb(16 185 129 / 0.10)", text: "rgb(110 231 183)" },
+    warn: { bg: "rgb(255 159 67 / 0.10)", text: "rgb(255 180 110)" },
+    bad:  { bg: "rgb(239 68 68 / 0.10)",  text: "rgb(252 165 165)" },
+    hot:  { bg: "rgb(255 99 99 / 0.10)",  text: "rgb(255 140 140)" },
+  } as const;
+  const s = styles[tone];
+  return (
+    <span
+      className="inline-flex items-center font-mono text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded-full"
+      style={{ background: s.bg, color: s.text }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function FlashMessage({
+  kind, message, onDismiss,
+}: {
+  kind: "ok" | "err";
+  message: string;
+  onDismiss: () => void;
+}) {
+  const tone = kind === "ok"
+    ? { border: "rgb(16 185 129 / 0.30)", bg: "rgb(16 185 129 / 0.08)", text: "rgb(110 231 183)", iconBg: "rgb(16 185 129 / 0.18)" }
+    : { border: "rgb(255 99 99 / 0.30)", bg: "rgb(255 99 99 / 0.06)", text: "rgb(255 140 140)", iconBg: "rgb(255 99 99 / 0.18)" };
+  return (
+    <div
+      className="flex items-start gap-3 px-4 py-3 rounded-xl border mb-6"
+      style={{ borderColor: tone.border, background: tone.bg }}
+    >
+      <span
+        className="mt-0.5 grid place-items-center w-5 h-5 rounded-full shrink-0"
+        style={{ background: tone.iconBg, color: tone.text }}
+        aria-hidden
+      >
+        {kind === "ok" ? (
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M5 12l5 5L20 7" />
+          </svg>
+        ) : (
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 8v4M12 16h.01" />
+          </svg>
+        )}
+      </span>
+      <span className="flex-1 text-[13.5px] text-ink">{message}</span>
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label="Dismiss"
+        className="grid place-items-center w-6 h-6 rounded-md text-ink-500 hover:text-ink hover:bg-hover transition-colors cursor-pointer"
+      >
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+          <path d="M3 3l6 6M3 9l6-6" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
+function SkeletonList() {
+  return (
+    <div className="rounded-xl border border-ink-200 bg-paper overflow-hidden">
+      {Array.from({ length: 3 }).map((_, i) => (
+        <div
+          key={i}
+          className={`flex items-center gap-3 px-5 py-4 ${i < 2 ? "border-b border-ink-100" : ""}`}
+        >
+          <div className="w-9 h-9 rounded-lg bg-ink-100 animate-pulse" />
+          <div className="flex-1 space-y-2">
+            <div className="h-3 w-1/3 rounded bg-ink-100 animate-pulse" />
+            <div className="h-2.5 w-2/3 rounded bg-ink-100 animate-pulse" />
+          </div>
+          <div className="h-7 w-16 rounded bg-ink-100 animate-pulse" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function GoogleGlyph() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 48 48" aria-hidden>
+      <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.6 32.6 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z" />
+      <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 16.1 19 13 24 13c3 0 5.8 1.1 7.9 3l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z" />
+      <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35 26.7 36 24 36c-5.2 0-9.6-3.4-11.3-8l-6.5 5C9.6 39.7 16.2 44 24 44z" />
+      <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.2 4.3-4.1 5.6l6.2 5.2C40.7 36 44 30.4 44 24c0-1.3-.1-2.4-.4-3.5z" />
+    </svg>
   );
 }

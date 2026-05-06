@@ -11,7 +11,7 @@
 
 @layer base {
   :root {
-    /* Notion light — warm grays */
+    /* Notion light — warm grays (untouched until we redesign light pass) */
     --c-paper: 255 255 255;
     --c-surface: 247 246 243;   /* sidebar / panels */
     --c-hover: 241 241 239;     /* row / button hover */
@@ -39,32 +39,58 @@
     --paper: var(--c-paper);
     --ink: var(--c-ink);
     --accent: var(--c-accent);
+
+    /* ====================================================================
+       NEW DESIGN SYSTEM — globally available --m-* tokens
+       Vercel pure-black canvas + Raycast warm gradient.
+       Theme-independent: always the same coral/amber/pink stops.
+       ==================================================================== */
+    --m-canvas:     10 10 11;     /* #0A0A0B */
+    --m-surface-1:  17 17 20;     /* #111114 raised cards */
+    --m-surface-2:  22 22 26;     /* #16161A nested */
+    --m-surface-3:  28 28 33;     /* #1C1C21 hover */
+    --m-line:       255 255 255;  /* used with /6, /10, /14 alpha */
+    --m-text:       244 244 245;  /* #F4F4F5 */
+    --m-muted:      161 161 170;  /* #A1A1AA */
+    --m-subtle:     113 113 122;  /* #71717A */
+    --m-faint:       82  82  91;  /* #52525B */
+    --m-coral:      255  99  99;  /* #FF6363 */
+    --m-amber:      255 159  67;  /* #FF9F43 */
+    --m-pink:       255 119 154;  /* #FF779A */
+    --m-green:       16 185 129;
+    --m-amber-warn: 245 158  11;
+    --m-red:        239  68  68;
   }
 
   [data-theme="dark"] {
-    --c-paper: 25 25 25;
-    --c-surface: 32 32 32;
-    --c-hover: 45 45 45;
+    /* Promote the new dark palette into the existing --c-* token slots so
+       every existing class (sheet, btn-accent, pill-*, side-link, etc.)
+       automatically inherits the new design without any component refactor. */
+    --c-paper:     10 10 11;        /* canvas — true near-black */
+    --c-surface:   17 17 20;        /* sidebar / panels */
+    --c-hover:     28 28 33;        /* row / button hover */
 
-    --c-ink: 255 255 255;
-    --c-ink-950: 255 255 255;
-    --c-ink-900: 240 240 240;
-    --c-ink-800: 225 225 225;
-    --c-ink-700: 210 210 210;
-    --c-ink-600: 185 185 185;
-    --c-ink-500: 160 160 162;
-    --c-ink-400: 135 135 138;
-    --c-ink-300: 95 95 98;
-    --c-ink-200: 65 65 68;
-    --c-ink-100: 48 48 50;
-    --c-ink-50: 34 34 36;
+    --c-ink:       244 244 245;     /* primary text */
+    --c-ink-950:   250 250 252;
+    --c-ink-900:   244 244 245;
+    --c-ink-800:   220 220 225;
+    --c-ink-700:   195 195 205;
+    --c-ink-600:   161 161 170;     /* muted body */
+    --c-ink-500:   130 130 140;
+    --c-ink-400:   113 113 122;     /* subtle */
+    --c-ink-300:    82  82  91;
+    --c-ink-200:    44  44  52;     /* hairline solid (thin look) */
+    --c-ink-100:    32  32  38;
+    --c-ink-50:     22  22  26;     /* matches surface-2 */
 
-    /* Accent = ink (white on dark) — monochrome product */
-    --c-accent: 255 255 255;
-    --c-accent-50: 45 45 47;
-    --c-accent-100: 55 55 58;
-    --c-accent-600: 230 230 230;
-    --c-accent-700: 210 210 210;
+    /* Accent stays mostly white for primary CTAs (Vercel-style). The warm
+       gradient lives in --m-* and is used surgically by .btn-* hover glows
+       and gradient utilities below. */
+    --c-accent:     244 244 245;
+    --c-accent-50:   28  28  33;
+    --c-accent-100:  44  44  52;
+    --c-accent-600: 230 230 235;
+    --c-accent-700: 210 210 215;
   }
 
   html, body { height: 100%; }
@@ -93,6 +119,22 @@
     outline: 2px solid rgb(var(--c-accent));
     outline-offset: 1px;
     border-radius: 3px;
+  }
+
+  /* Dark mode swaps focus ring to warm coral — matches the new design accent */
+  [data-theme="dark"] *:focus-visible {
+    outline: 2px solid rgb(var(--m-coral) / 0.55);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+
+  /* Dark-mode-only warm glow on primary CTAs — ties app buttons into the
+     marketing canvas without needing to refactor every callsite. */
+  [data-theme="dark"] .btn-accent:hover,
+  [data-theme="dark"] .btn-primary:hover {
+    box-shadow:
+      0 0 0 1px rgb(var(--m-coral) / 0.40),
+      0 0 22px -4px rgb(var(--m-coral) / 0.45);
   }
 }
 
@@ -287,4 +329,425 @@ input[type="time"], input[type="date"], input[type="number"], input[type="dateti
 [data-theme="dark"] input[type="number"],
 [data-theme="dark"] input[type="datetime-local"] {
   color-scheme: dark;
+}
+
+/* ============================================================================
+   MARKETING CANVAS — landing/pricing/legal dark design system
+   Scoped to .marketing-canvas so it never leaks into /app or /admin.
+   Reference: Vercel pure-black + Raycast warm gradient + Linear restraint.
+   ============================================================================ */
+
+/* The marketing canvas — opt-in wrapper that forces dark mode + Geist
+   regardless of the user's theme preference. Tokens themselves now live at
+   :root so utility classes (.m-glass, .m-btn, etc.) are usable app-wide. */
+.marketing-canvas {
+  background: rgb(var(--m-canvas));
+  color: rgb(var(--m-text));
+  color-scheme: dark;
+  font-family: var(--font-display), var(--font-sans), system-ui, sans-serif;
+  font-feature-settings: "ss01", "ss02", "cv11";
+}
+
+/* Force the canvas color even when html/body is light */
+.marketing-canvas,
+.marketing-canvas * {
+  border-color: rgb(var(--m-line) / 0.08);
+}
+
+.marketing-canvas ::selection {
+  background-color: rgb(var(--m-coral) / 0.35);
+  color: rgb(var(--m-text));
+}
+
+/* Crisp focus rings, warm */
+.marketing-canvas *:focus-visible {
+  outline: 2px solid rgb(var(--m-coral) / 0.55);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* ----- typography utilities ----- */
+.m-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: rgb(var(--m-muted));
+}
+
+.m-display {
+  font-family: var(--font-display), var(--font-sans), system-ui;
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  line-height: 0.98;
+  color: rgb(var(--m-text));
+}
+
+.m-h2 {
+  font-family: var(--font-display), var(--font-sans), system-ui;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  color: rgb(var(--m-text));
+}
+
+.m-body {
+  color: rgb(var(--m-muted));
+  line-height: 1.6;
+}
+
+.m-mono {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-feature-settings: "ss01", "tnum";
+}
+
+/* ----- The Raycast warm gradient (reusable) ----- */
+.m-gradient-text {
+  background-image: linear-gradient(
+    100deg,
+    rgb(var(--m-coral)) 0%,
+    rgb(var(--m-pink)) 35%,
+    rgb(var(--m-amber)) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+.m-gradient-bg {
+  background-image: linear-gradient(
+    100deg,
+    rgb(var(--m-coral)) 0%,
+    rgb(var(--m-pink)) 50%,
+    rgb(var(--m-amber)) 100%
+  );
+}
+
+.m-gradient-border {
+  position: relative;
+  isolation: isolate;
+}
+.m-gradient-border::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    135deg,
+    rgb(var(--m-coral) / 0.7),
+    rgb(var(--m-amber) / 0.4) 50%,
+    rgb(var(--m-line) / 0.08) 100%
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ----- Surfaces ----- */
+.m-card {
+  background: rgb(var(--m-surface-1));
+  border: 1px solid rgb(var(--m-line) / 0.07);
+  border-radius: 14px;
+  position: relative;
+}
+.m-card-hairline {
+  background:
+    linear-gradient(rgb(var(--m-surface-1)), rgb(var(--m-surface-1))) padding-box,
+    linear-gradient(180deg, rgb(var(--m-line) / 0.12), rgb(var(--m-line) / 0.04)) border-box;
+  border: 1px solid transparent;
+  border-radius: 14px;
+}
+
+/* Glass card with subtle inner sheen */
+.m-glass {
+  background: rgb(var(--m-surface-1) / 0.72);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  border: 1px solid rgb(var(--m-line) / 0.07);
+  border-radius: 14px;
+  box-shadow:
+    inset 0 1px 0 rgb(var(--m-line) / 0.06),
+    0 1px 0 rgb(0 0 0 / 0.4);
+}
+
+/* ----- Buttons ----- */
+.m-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1rem;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background-color 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    color 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 220ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.m-btn-primary {
+  background: rgb(var(--m-text));
+  color: rgb(var(--m-canvas));
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.6),
+    0 1px 0 rgb(0 0 0 / 0.4),
+    0 0 0 0 rgb(var(--m-coral) / 0);
+}
+.m-btn-primary:hover {
+  background: rgb(255 255 255);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.7),
+    0 0 0 1px rgb(var(--m-coral) / 0.45),
+    0 0 28px -4px rgb(var(--m-coral) / 0.55);
+}
+
+.m-btn-ghost {
+  background: rgb(var(--m-line) / 0.04);
+  color: rgb(var(--m-text));
+  border: 1px solid rgb(var(--m-line) / 0.10);
+}
+.m-btn-ghost:hover {
+  background: rgb(var(--m-line) / 0.08);
+  border-color: rgb(var(--m-line) / 0.18);
+}
+
+.m-btn-link {
+  color: rgb(var(--m-text));
+  text-decoration: none;
+  position: relative;
+}
+.m-btn-link:hover { color: rgb(var(--m-coral)); }
+
+/* ----- Pill (status / eyebrow capsule) ----- */
+.m-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid rgb(var(--m-line) / 0.10);
+  background: rgb(var(--m-line) / 0.04);
+  font-size: 12px;
+  font-weight: 500;
+  color: rgb(var(--m-muted));
+}
+.m-pill-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgb(var(--m-coral));
+  box-shadow: 0 0 0 0 rgb(var(--m-coral) / 0.5);
+  animation: m-pulse 2.4s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+@keyframes m-pulse {
+  0%   { box-shadow: 0 0 0 0 rgb(var(--m-coral) / 0.55); }
+  60%  { box-shadow: 0 0 0 8px rgb(var(--m-coral) / 0); }
+  100% { box-shadow: 0 0 0 0 rgb(var(--m-coral) / 0); }
+}
+
+/* ----- Hairline divider patterns ----- */
+.m-hairline {
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgb(var(--m-line) / 0.14) 50%,
+    transparent
+  );
+}
+
+/* ----- Grid / dot backdrop ----- */
+.m-grid-bg {
+  background-image:
+    linear-gradient(rgb(var(--m-line) / 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--m-line) / 0.04) 1px, transparent 1px);
+  background-size: 56px 56px;
+  background-position: -1px -1px;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 30%, transparent 80%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 30%, transparent 80%);
+}
+
+.m-dot-bg {
+  background-image:
+    radial-gradient(circle, rgb(var(--m-line) / 0.08) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+/* ----- Cursor-tracking spotlight: position via --x / --y CSS vars ----- */
+.m-spotlight {
+  --x: 50%;
+  --y: 30%;
+  background: radial-gradient(
+    600px circle at var(--x) var(--y),
+    rgb(var(--m-coral) / 0.10),
+    rgb(var(--m-amber) / 0.05) 30%,
+    transparent 60%
+  );
+  pointer-events: none;
+  transition: background 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ----- Reveal-on-scroll ----- */
+.m-reveal {
+  opacity: 0;
+  transform: translateY(14px);
+  transition:
+    opacity 600ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 600ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition-delay: var(--m-delay, 0ms);
+}
+.m-reveal.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* ----- Marquee / logo strip ----- */
+@keyframes m-marquee {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+.m-marquee {
+  display: flex;
+  gap: 3rem;
+  width: max-content;
+  animation: m-marquee 38s linear infinite;
+}
+.m-marquee:hover { animation-play-state: paused; }
+
+/* ----- Composer mock cursor blink ----- */
+@keyframes m-caret {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+.m-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  background: rgb(var(--m-coral));
+  vertical-align: text-bottom;
+  margin-left: 1px;
+  animation: m-caret 1.05s steps(1) infinite;
+}
+
+/* ----- Floating orbs (deliberately quiet) ----- */
+@keyframes m-float-a {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50%      { transform: translate(40px, -20px) scale(1.05); }
+}
+@keyframes m-float-b {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50%      { transform: translate(-30px, 30px) scale(0.95); }
+}
+.m-orb {
+  position: absolute;
+  border-radius: 999px;
+  filter: blur(80px);
+  opacity: 0.55;
+  pointer-events: none;
+}
+.m-orb-coral {
+  background: radial-gradient(circle, rgb(var(--m-coral) / 0.55), transparent 70%);
+  animation: m-float-a 22s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+.m-orb-amber {
+  background: radial-gradient(circle, rgb(var(--m-amber) / 0.45), transparent 70%);
+  animation: m-float-b 26s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+/* ----- Reduced motion respect ----- */
+@media (prefers-reduced-motion: reduce) {
+  .marketing-canvas .m-orb,
+  .marketing-canvas .m-pill-dot,
+  .marketing-canvas .m-marquee,
+  .marketing-canvas .m-caret {
+    animation: none !important;
+  }
+  .marketing-canvas .m-spotlight { transition: none !important; }
+  .marketing-canvas .m-reveal {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
+
+/* ----- Long-form legal / docs prose inside the marketing canvas ----- */
+.m-prose {
+  color: rgb(var(--m-muted));
+  font-size: 15px;
+  line-height: 1.7;
+}
+.m-prose h1 {
+  font-family: var(--font-display), var(--font-sans), system-ui;
+  color: rgb(var(--m-text));
+  font-size: 36px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  margin: 0 0 4px 0;
+}
+.m-prose h2 {
+  font-family: var(--font-display), var(--font-sans), system-ui;
+  color: rgb(var(--m-text));
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 36px 0 10px 0;
+}
+.m-prose p { margin: 0 0 14px 0; }
+.m-prose ul {
+  list-style: disc;
+  padding-left: 1.25rem;
+  margin: 6px 0 14px 0;
+}
+.m-prose ul li { margin-bottom: 6px; }
+.m-prose b, .m-prose strong { color: rgb(var(--m-text)); font-weight: 600; }
+.m-prose a {
+  color: rgb(var(--m-text));
+  text-decoration: underline;
+  text-decoration-color: rgb(var(--m-coral) / 0.5);
+  text-underline-offset: 3px;
+  transition: color 150ms ease, text-decoration-color 150ms ease;
+}
+.m-prose a:hover {
+  color: rgb(var(--m-coral));
+  text-decoration-color: rgb(var(--m-coral));
+}
+.m-prose code {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 13px;
+  background: rgb(var(--m-line) / 0.06);
+  border: 1px solid rgb(var(--m-line) / 0.08);
+  border-radius: 4px;
+  padding: 1px 6px;
+  color: rgb(var(--m-text));
+}
+.m-prose .updated {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 12px;
+  color: rgb(var(--m-subtle));
+  margin: 0 0 32px 0;
+}
+
+/* ----- Scrollbars in marketing context ----- */
+.marketing-canvas ::-webkit-scrollbar { width: 8px; height: 8px; }
+.marketing-canvas ::-webkit-scrollbar-track { background: transparent; }
+.marketing-canvas ::-webkit-scrollbar-thumb {
+  background: rgb(var(--m-line) / 0.08);
+  border-radius: 999px;
+}
+.marketing-canvas ::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--m-line) / 0.16);
 }

@@ -2,6 +2,9 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import PageHeader from "@/components/app/PageHeader";
+import KpiCard from "@/components/app/KpiCard";
+import CodeBlock from "@/components/app/CodeBlock";
 
 type SystemData = {
   locks: Array<{ key: string; acquired_at: string; expires_at: string }>;
@@ -64,9 +67,19 @@ export default function AdminSystemPage() {
 
   if (!data) {
     return (
-      <div className="page-narrow">
-        <h1 className="text-[28px] font-bold tracking-tight">System</h1>
-        <p className="text-[13px] text-ink-500 mt-2">Loading…</p>
+      <div className="page">
+        <PageHeader eyebrow="Operator" title="System" />
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="h-24 rounded-xl bg-ink-100 animate-pulse" />
+            ))}
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="h-56 rounded-xl bg-ink-100 animate-pulse" />
+            <div className="h-56 rounded-xl bg-ink-100 animate-pulse" />
+          </div>
+        </div>
       </div>
     );
   }
@@ -77,69 +90,72 @@ export default function AdminSystemPage() {
       : 0;
 
   return (
-    <div className="page-narrow">
-      <h1 className="text-[28px] font-bold tracking-tight">System</h1>
-      <p className="text-[13px] text-ink-500 mt-1">
-        Cron lease state, environment, and manual triggers.
-      </p>
+    <div className="page">
+      <PageHeader
+        eyebrow="Operator"
+        title="System"
+        subtitle="Cron lease state, environment, AI provider, and manual triggers."
+      />
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5">
-        <Stat label="Sends · 1h" value={data.sends_1h.toLocaleString()} />
-        <Stat
+      <section className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+        <KpiCard label="Sends · 1h" value={data.sends_1h.toLocaleString()} />
+        <KpiCard
           label="Error rate · 1h"
           value={`${(errRate1h * 100).toFixed(1)}%`}
-          tone={errRate1h > 0.05 ? "warn" : undefined}
+          tone={errRate1h > 0.05 ? "hot" : "default"}
         />
-        <Stat
+        <KpiCard
           label="Pending webhooks"
           value={data.pending_deliveries.toLocaleString()}
-          tone={data.pending_deliveries > 50 ? "warn" : undefined}
+          tone={data.pending_deliveries > 50 ? "hot" : "default"}
         />
-        <Stat
+        <KpiCard
           label="Last send"
-          value={
-            data.last_send_at
-              ? new Date(data.last_send_at).toLocaleTimeString()
-              : "never"
-          }
+          value={data.last_send_at ? new Date(data.last_send_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : "never"}
         />
-      </div>
+      </section>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
-        <div className="sheet p-4">
-          <h2 className="text-[14px] font-semibold mb-3">Cron leases</h2>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <Panel title="Cron leases">
           {data.locks.length === 0 ? (
-            <p className="text-[13px] text-ink-500">No active leases (cron is idle).</p>
+            <div className="flex items-center gap-2 py-1 text-[13px] text-[rgb(110_231_183)]">
+              <span
+                className="inline-block w-1.5 h-1.5 rounded-full"
+                style={{ background: "rgb(16 185 129)", boxShadow: "0 0 8px rgb(16 185 129 / 0.5)" }}
+              />
+              No active leases (cron is idle).
+            </div>
           ) : (
-            <table className="w-full text-[13px]">
-              <thead>
-                <tr className="text-[12px] text-ink-500 text-left">
-                  <th className="py-1 font-medium">Key</th>
-                  <th className="py-1 font-medium">Acquired</th>
-                  <th className="py-1 font-medium">Expires</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.locks.map((l) => (
-                  <tr key={l.key} className="border-t border-ink-100">
-                    <td className="py-1 font-mono text-[11px]">{l.key}</td>
-                    <td className="py-1 text-[11px] text-ink-500">
-                      {new Date(l.acquired_at).toLocaleTimeString()}
-                    </td>
-                    <td className="py-1 text-[11px] text-ink-500">
-                      {new Date(l.expires_at).toLocaleTimeString()}
-                    </td>
+            <div className="rounded-lg border border-ink-100 overflow-hidden mb-4">
+              <table className="w-full text-[13px]">
+                <thead>
+                  <tr className="text-left bg-surface border-b border-ink-100">
+                    <ColHead>Key</ColHead>
+                    <ColHead>Acquired</ColHead>
+                    <ColHead>Expires</ColHead>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {data.locks.map((l, i) => (
+                    <tr
+                      key={l.key}
+                      className={i < data.locks.length - 1 ? "border-b border-ink-100" : ""}
+                    >
+                      <td className="py-2 px-3 font-mono text-[12px] text-ink">{l.key}</td>
+                      <td className="py-2 px-3 font-mono text-[11.5px] text-ink-500">{new Date(l.acquired_at).toLocaleTimeString()}</td>
+                      <td className="py-2 px-3 font-mono text-[11.5px] text-ink-500">{new Date(l.expires_at).toLocaleTimeString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
-          <div className="mt-4 flex gap-2 flex-wrap">
+          <div className="flex gap-2 flex-wrap mt-4">
             <button
               type="button"
               disabled={busy}
               onClick={() => trigger("tick")}
-              className="btn-quiet text-[12px]"
+              className="btn-quiet text-[12.5px]"
             >
               Run /api/tick
             </button>
@@ -147,148 +163,176 @@ export default function AdminSystemPage() {
               type="button"
               disabled={busy}
               onClick={() => trigger("check-replies")}
-              className="btn-quiet text-[12px]"
+              className="btn-quiet text-[12.5px]"
             >
               Run /api/check-replies
             </button>
           </div>
           {output && (
-            <pre className="mt-3 text-[11px] bg-paper border border-ink-100 rounded p-2 overflow-x-auto max-h-60">
-              {output}
-            </pre>
+            <div className="mt-3">
+              <CodeBlock language="json">{output}</CodeBlock>
+            </div>
           )}
-        </div>
+        </Panel>
 
-        <div className="sheet p-4">
-          <h2 className="text-[14px] font-semibold mb-3">Environment</h2>
-          <ul className="text-[13px] space-y-1.5">
+        <Panel title="Environment">
+          <div className="space-y-1.5">
             <EnvLine ok={data.env.has_encryption} label="ENCRYPTION_SECRET" />
             <EnvLine ok={data.env.has_cron_secret} label="CRON_SECRET" />
             <EnvLine ok={data.env.has_stripe} label="Stripe" />
             <EnvLine ok={data.env.has_oauth} label="Google OAuth" />
             <EnvLine ok={data.env.has_postmark} label="Postmark (transactional)" />
             <EnvLine ok={data.env.has_sentry} label="Sentry" />
-            <li className="flex items-center justify-between">
-              <span className="text-ink-500">APP_URL</span>
-              <span className="font-mono text-[11px] truncate max-w-[200px]">
+            <div className="flex items-center justify-between py-1.5">
+              <span className="text-[13px] text-ink-700">APP_URL</span>
+              <span className="font-mono text-[11.5px] text-ink-500 truncate max-w-[220px]">
                 {data.env.app_url ?? "—"}
-              </span>
-            </li>
-          </ul>
-        </div>
-      </div>
-
-      <div className="sheet p-4 mt-3">
-        <h2 className="text-[14px] font-semibold mb-3">AI provider</h2>
-        {!data.ai.active ? (
-          <p className="text-[13px] text-ink-500">
-            No AI provider configured. Reply triage and{" "}
-            <code className="text-[11px]">{`{{ai:...}}`}</code> personalization are
-            inactive. Set <code>GROQ_API_KEY</code>, <code>GEMINI_API_KEY</code>, or{" "}
-            <code>ANTHROPIC_API_KEY</code> to enable.
-          </p>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1.5 text-[13px]">
-            <div className="flex items-center justify-between">
-              <span className="text-ink-500">Active</span>
-              <span className="capitalize text-emerald-700">{data.ai.active}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-ink-500">Available keys</span>
-              <span className="font-mono text-[11px]">
-                {data.ai.available.length > 0
-                  ? data.ai.available.join(" · ")
-                  : "—"}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-ink-500">Triage model</span>
-              <span className="font-mono text-[11px] truncate">
-                {data.ai.triage_model ?? "—"}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-ink-500">Generate model</span>
-              <span className="font-mono text-[11px] truncate">
-                {data.ai.generate_model ?? "—"}
               </span>
             </div>
           </div>
-        )}
+        </Panel>
       </div>
 
-      <div className="sheet p-4 mt-3">
-        <h2 className="text-[14px] font-semibold mb-3">Recent operator actions</h2>
+      <Panel title="AI provider" className="mt-3">
+        {!data.ai.active ? (
+          <div
+            className="px-3 py-3 rounded-lg border text-[13px]"
+            style={{
+              borderColor: "rgb(255 159 67 / 0.30)",
+              background: "rgb(255 159 67 / 0.06)",
+              color: "rgb(244 244 245)",
+            }}
+          >
+            No AI provider configured. Reply triage and{" "}
+            <code className="font-mono text-[12px] bg-surface px-1.5 py-0.5 rounded text-ink">{`{{ai:...}}`}</code>{" "}
+            personalization are inactive. Set{" "}
+            <code className="font-mono text-[12px] bg-surface px-1.5 py-0.5 rounded text-ink">GROQ_API_KEY</code>,{" "}
+            <code className="font-mono text-[12px] bg-surface px-1.5 py-0.5 rounded text-ink">GEMINI_API_KEY</code>, or{" "}
+            <code className="font-mono text-[12px] bg-surface px-1.5 py-0.5 rounded text-ink">ANTHROPIC_API_KEY</code> to enable.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2 text-[13px]">
+            <KV label="Active">
+              <span
+                className="inline-flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-wider px-2 py-0.5 rounded-full"
+                style={{ background: "rgb(16 185 129 / 0.10)", color: "rgb(110 231 183)" }}
+              >
+                <span
+                  className="inline-block w-1.5 h-1.5 rounded-full"
+                  style={{ background: "rgb(16 185 129)", boxShadow: "0 0 6px rgb(16 185 129 / 0.6)" }}
+                />
+                {data.ai.active}
+              </span>
+            </KV>
+            <KV label="Available keys">
+              <span className="font-mono text-[12px] text-ink-700">
+                {data.ai.available.length > 0 ? data.ai.available.join(" · ") : "—"}
+              </span>
+            </KV>
+            <KV label="Triage model">
+              <span className="font-mono text-[12px] text-ink-700 truncate">
+                {data.ai.triage_model ?? "—"}
+              </span>
+            </KV>
+            <KV label="Generate model">
+              <span className="font-mono text-[12px] text-ink-700 truncate">
+                {data.ai.generate_model ?? "—"}
+              </span>
+            </KV>
+          </div>
+        )}
+      </Panel>
+
+      <Panel title="Recent operator actions" className="mt-3">
         {data.audit.length === 0 ? (
           <p className="text-[13px] text-ink-500">No operator actions logged yet.</p>
         ) : (
-          <table className="w-full text-[13px]">
-            <thead>
-              <tr className="text-[12px] text-ink-500 text-left">
-                <th className="py-1.5 font-medium">Action</th>
-                <th className="py-1.5 font-medium">Target</th>
-                <th className="py-1.5 font-medium">When</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.audit.map((a) => (
-                <tr key={a.id} className="border-t border-ink-100">
-                  <td className="py-1.5 font-mono text-[12px]">{a.action}</td>
-                  <td className="py-1.5 text-[12px]">
-                    {a.target_type === "user" && a.target_id ? (
-                      <Link
-                        className="hover:underline font-mono text-[11px]"
-                        href={`/admin/users/${a.target_id}`}
-                      >
-                        {a.target_id.slice(0, 8)}…
-                      </Link>
-                    ) : (
-                      <span className="text-ink-500">—</span>
-                    )}
-                  </td>
-                  <td className="py-1.5 text-[11px] text-ink-500">
-                    {new Date(a.created_at).toLocaleString()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="space-y-1">
+            {data.audit.map((a) => (
+              <div
+                key={a.id}
+                className="grid grid-cols-[auto,1fr,auto] items-baseline gap-3 py-1.5 px-2 rounded hover:bg-hover transition-colors"
+              >
+                <code className="font-mono text-[12px] text-ink">{a.action}</code>
+                <span className="font-mono text-[11.5px] text-ink-500 truncate">
+                  {a.target_type === "user" && a.target_id ? (
+                    <Link
+                      href={`/admin/users/${a.target_id}`}
+                      className="text-ink hover:text-[rgb(255_140_140)] transition-colors"
+                    >
+                      user · {a.target_id.slice(0, 8)}…
+                    </Link>
+                  ) : a.payload ? (
+                    JSON.stringify(a.payload)
+                  ) : (
+                    "—"
+                  )}
+                </span>
+                <span className="font-mono text-[11.5px] text-ink-500 shrink-0">
+                  {new Date(a.created_at).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+                </span>
+              </div>
+            ))}
+          </div>
         )}
-      </div>
+      </Panel>
     </div>
   );
 }
 
 function EnvLine({ ok, label }: { ok: boolean; label: string }) {
   return (
-    <li className="flex items-center justify-between">
-      <span>{label}</span>
-      <span className={ok ? "text-emerald-700" : "text-amber-700"}>
-        {ok ? "configured" : "missing"}
-      </span>
-    </li>
+    <div className="flex items-center justify-between py-1.5">
+      <span className="text-[13px] text-ink-700">{label}</span>
+      {ok ? (
+        <span
+          className="inline-flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-wider px-2 py-0.5 rounded-full"
+          style={{ background: "rgb(16 185 129 / 0.10)", color: "rgb(110 231 183)" }}
+        >
+          <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: "rgb(16 185 129)" }} />
+          configured
+        </span>
+      ) : (
+        <span
+          className="inline-flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-wider px-2 py-0.5 rounded-full"
+          style={{ background: "rgb(255 159 67 / 0.10)", color: "rgb(255 180 110)" }}
+        >
+          <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: "rgb(255 159 67)" }} />
+          missing
+        </span>
+      )}
+    </div>
   );
 }
 
-function Stat({
-  label,
-  value,
-  tone,
+function Panel({
+  title, children, className = "",
 }: {
-  label: string;
-  value: string;
-  tone?: "warn";
+  title: string;
+  children: React.ReactNode;
+  className?: string;
 }) {
   return (
-    <div className="sheet p-4">
-      <div className="text-[11px] uppercase tracking-wide text-ink-500">{label}</div>
-      <div
-        className={
-          "text-[18px] font-bold mt-1 " + (tone === "warn" ? "text-red-600" : "text-ink")
-        }
-      >
-        {value}
-      </div>
+    <section className={`rounded-xl border border-ink-200 bg-paper p-4 sm:p-5 ${className}`}>
+      <h2 className="text-[14px] font-semibold tracking-[-0.01em] text-ink mb-4">{title}</h2>
+      {children}
+    </section>
+  );
+}
+
+function KV({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-[12.5px] text-ink-500">{label}</span>
+      <span className="text-right">{children}</span>
     </div>
+  );
+}
+
+function ColHead({ children }: { children: React.ReactNode }) {
+  return (
+    <th className="font-mono text-[10.5px] uppercase tracking-wider text-ink-500 font-medium py-2 px-3 text-left">
+      {children}
+    </th>
   );
 }

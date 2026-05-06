@@ -8,13 +8,13 @@ export const metadata = {
 export default function PrivacyPage() {
   return (
     <MarketingShell>
-      <article className="mx-auto max-w-3xl px-6 py-16 text-[14px] leading-relaxed text-ink-700">
-        <h1 className="text-[32px] font-bold tracking-tight text-ink mb-2">Privacy Policy</h1>
-        <p className="text-[12px] text-ink-500 mb-8">Last updated: 2026-05-04</p>
+      <article className="m-prose mx-auto max-w-3xl px-6 py-16">
+        <h1>Privacy Policy</h1>
+        <p className="updated">Last updated: 2026-05-04</p>
 
         <Section title="What this policy covers">
           EmailsVia (&ldquo;we&rdquo;) is a self-serve mail-merge product operated by the
-          author of <a className="text-ink underline" href="https://emailsvia.com">emailsvia.com</a>.
+          author of <a className="" href="https://emailsvia.com">emailsvia.com</a>.
           This policy explains what data we collect when you use the service, how we use it,
           and how to remove it.
         </Section>
@@ -51,7 +51,7 @@ export default function PrivacyPage() {
             EmailsVia&rsquo;s use and transfer of information received from Google APIs to any
             other app will adhere to the{" "}
             <a
-              className="text-ink underline"
+              className=""
               href="https://developers.google.com/terms/api-services-user-data-policy"
               target="_blank"
               rel="noreferrer"
@@ -80,7 +80,7 @@ export default function PrivacyPage() {
             <li>
               You can revoke access at any time at{" "}
               <a
-                className="text-ink underline"
+                className=""
                 href="https://myaccount.google.com/permissions"
                 target="_blank"
                 rel="noreferrer"
@@ -120,7 +120,7 @@ export default function PrivacyPage() {
             Deleting your account removes all associated rows (campaigns, recipients,
             tracking events, replies, senders, subscriptions) and revokes Gmail access.
             Backups are retained for at most 30 days. To delete an account email{" "}
-            <a className="text-ink underline" href="mailto:hello@emailsvia.com">
+            <a className="" href="mailto:hello@emailsvia.com">
               hello@emailsvia.com
             </a>
             {" "}from the address attached to the account.
@@ -142,7 +142,7 @@ export default function PrivacyPage() {
         <Section title="Contact">
           <p>
             Questions or data-deletion requests:{" "}
-            <a className="text-ink underline" href="mailto:hello@emailsvia.com">
+            <a className="" href="mailto:hello@emailsvia.com">
               hello@emailsvia.com
             </a>
             .
@@ -155,8 +155,8 @@ export default function PrivacyPage() {
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="mb-8">
-      <h2 className="text-[18px] font-semibold text-ink mt-2 mb-2">{title}</h2>
+    <section>
+      <h2>{title}</h2>
       {children}
     </section>
   );

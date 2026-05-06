@@ -48,6 +48,26 @@ export default function EditCampaignPage({ params }: { params: Promise<{ id: str
     return () => { cancel = true; };
   }, [id, router]);
 
-  if (!initial) return <AppShell><div className="page text-sm text-ink-500">Loading…</div></AppShell>;
+  if (!initial) {
+    return (
+      <AppShell>
+        <div className="page space-y-4">
+          <div className="h-7 w-32 rounded bg-ink-100 animate-pulse" />
+          <div className="h-10 w-2/3 rounded bg-ink-100 animate-pulse" />
+          <div className="h-4 w-1/3 rounded bg-ink-100 animate-pulse" />
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr,320px] gap-8 mt-6">
+            <div className="space-y-3">
+              <div className="h-72 rounded-xl bg-ink-100 animate-pulse" />
+              <div className="h-40 rounded-xl bg-ink-100 animate-pulse" />
+            </div>
+            <div className="space-y-3">
+              <div className="h-32 rounded-xl bg-ink-100 animate-pulse" />
+              <div className="h-32 rounded-xl bg-ink-100 animate-pulse" />
+            </div>
+          </div>
+        </div>
+      </AppShell>
+    );
+  }
   return <AppShell><CampaignForm mode="edit" initial={initial} initialSteps={steps} /></AppShell>;
 }

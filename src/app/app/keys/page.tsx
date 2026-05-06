@@ -2,6 +2,9 @@
 
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
+import PageHeader from "@/components/app/PageHeader";
+import EmptyState from "@/components/app/EmptyState";
+import CodeBlock from "@/components/app/CodeBlock";
 
 type ApiKey = {
   id: string;
@@ -18,13 +21,17 @@ export default function KeysPage() {
   const [revealed, setRevealed] = useState<{ name: string; raw_token: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [origin, setOrigin] = useState("");
 
   async function load() {
     const r = await fetch("/api/keys", { cache: "no-store" });
     const d = await r.json();
     setKeys(d.keys ?? []);
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    setOrigin(window.location.origin);
+  }, []);
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
@@ -63,43 +70,36 @@ export default function KeysPage() {
     if (!revealed) return;
     await navigator.clipboard.writeText(revealed.raw_token);
     setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    window.setTimeout(() => setCopied(false), 2000);
   }
 
   return (
     <AppShell>
-      <div className="page-narrow">
-        <h1 className="text-[28px] font-bold tracking-tight">API keys</h1>
-        <p className="text-[13px] text-ink-500 mt-1 mb-6">
-          Used by the Google Sheets add-on and any direct API calls. Treat them like passwords
-          &mdash; we only ever show the full token once.
-        </p>
+      <div className="page">
+        <PageHeader
+          eyebrow="Settings · Developer"
+          title="API keys"
+          subtitle="For the Google Sheets add-on and direct API calls. Treat them like passwords — the full token shows once, never again."
+        />
 
         {revealed && (
-          <div className="sheet p-5 mb-6 border-amber-300 bg-amber-50/70">
-            <div className="text-[14px] font-semibold mb-1">Copy this now &mdash; you won&rsquo;t see it again</div>
-            <p className="text-[12px] text-ink-700 mb-3">
-              Key &ldquo;{revealed.name}&rdquo; was created. Paste it into the Sheets add-on or
-              your code, then dismiss this banner. We don&rsquo;t store the raw value.
-            </p>
-            <div className="flex items-center gap-2">
-              <code className="font-mono text-[12px] bg-paper border border-ink-200 rounded px-2.5 py-1.5 flex-1 truncate">
-                {revealed.raw_token}
-              </code>
-              <button onClick={copyToken} className="btn-ghost text-[12px]">
-                {copied ? "Copied" : "Copy"}
-              </button>
-              <button onClick={() => setRevealed(null)} className="btn-quiet text-[12px]">
-                Dismiss
-              </button>
-            </div>
-          </div>
+          <RevealedSecretCard
+            label={`Key "${revealed.name}" created`}
+            description="Paste it into the Sheets add-on or your code right now. We don't store the raw value, so this is your only chance to see it."
+            secret={revealed.raw_token}
+            copied={copied}
+            onCopy={copyToken}
+            onDismiss={() => setRevealed(null)}
+          />
         )}
 
-        <form onSubmit={create} className="sheet p-5 mb-6">
+        <form
+          onSubmit={create}
+          className="rounded-xl border border-ink-200 bg-paper p-5 mb-6"
+        >
           <h2 className="text-[14px] font-semibold mb-3">Create a new key</h2>
-          <div className="flex items-end gap-2">
-            <div className="flex-1">
+          <div className="flex items-end gap-2 flex-wrap">
+            <div className="flex-1 min-w-[200px]">
               <label htmlFor="key-name" className="label-cap">Label</label>
               <input
                 id="key-name"
@@ -119,65 +119,90 @@ export default function KeysPage() {
               {creating ? "Creating…" : "Create key"}
             </button>
           </div>
-          {err && <p className="mt-2 text-[12px] text-red-600">{err}</p>}
+          {err && (
+            <div
+              className="mt-3 flex items-start gap-2 px-3 py-2 rounded-lg text-[13px] border"
+              style={{
+                borderColor: "rgb(255 99 99 / 0.30)",
+                background: "rgb(255 99 99 / 0.06)",
+                color: "rgb(255 140 140)",
+              }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" className="mt-0.5 shrink-0" aria-hidden>
+                <circle cx="12" cy="12" r="10" />
+                <path d="M12 8v4M12 16h.01" />
+              </svg>
+              <span>{err}</span>
+            </div>
+          )}
         </form>
 
-        {keys === null && <p className="text-[13px] text-ink-500">Loading…</p>}
+        {keys === null && <SkeletonKeyList />}
 
         {keys && keys.length === 0 && !revealed && (
-          <div className="text-center py-12 border border-dashed border-ink-200 rounded-lg">
-            <div className="text-[14px] font-medium text-ink mb-1">No API keys yet</div>
-            <p className="text-[13px] text-ink-500">
-              Create your first key above to connect the Sheets add-on or call the public API.
-            </p>
-          </div>
+          <EmptyState
+            icon={
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <circle cx="8" cy="15" r="4" />
+                <path d="M11 12l9-9M16 7l3 3" />
+              </svg>
+            }
+            title="No API keys yet"
+            body="Create your first key above to connect the Sheets add-on or call the public API. Keys are scoped to your account and can be revoked any time."
+          />
         )}
 
         {keys && keys.length > 0 && (
-          <div className="sheet overflow-hidden">
-            <table className="w-full text-[13px]">
-              <thead>
-                <tr className="text-[11px] uppercase tracking-wide text-ink-500 text-left">
-                  <th className="px-4 py-2.5 font-medium">Name</th>
-                  <th className="px-4 py-2.5 font-medium">Prefix</th>
-                  <th className="px-4 py-2.5 font-medium">Last used</th>
-                  <th className="px-4 py-2.5 font-medium">Created</th>
-                  <th className="px-4 py-2.5 font-medium"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {keys.map((k) => (
-                  <tr key={k.id} className="border-t border-ink-100">
-                    <td className="px-4 py-2.5 font-medium">{k.name}</td>
-                    <td className="px-4 py-2.5 font-mono text-[12px] text-ink-600">{k.prefix}…</td>
-                    <td className="px-4 py-2.5 text-ink-600">
-                      {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : "never"}
-                    </td>
-                    <td className="px-4 py-2.5 text-ink-600">
-                      {new Date(k.created_at).toLocaleDateString()}
-                    </td>
-                    <td className="px-4 py-2.5 text-right">
-                      <button
-                        onClick={() => revoke(k.id, k.prefix)}
-                        className="btn-quiet text-[12px] text-red-600 hover:bg-red-50 hover:text-red-700"
-                      >
-                        Revoke
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="rounded-xl border border-ink-200 bg-paper overflow-hidden">
+            <div className="hidden md:grid grid-cols-[1.4fr,1fr,1fr,1fr,auto] gap-3 px-4 py-2.5 border-b border-ink-200 bg-surface">
+              <ColHead>Name</ColHead>
+              <ColHead>Prefix</ColHead>
+              <ColHead>Last used</ColHead>
+              <ColHead>Created</ColHead>
+              <ColHead> </ColHead>
+            </div>
+            {keys.map((k, i) => (
+              <div
+                key={k.id}
+                className={`md:grid md:grid-cols-[1.4fr,1fr,1fr,1fr,auto] md:gap-3 md:items-center px-4 py-3 hover:bg-hover transition-colors ${
+                  i < keys.length - 1 ? "border-b border-ink-100" : ""
+                }`}
+              >
+                <div className="text-[13.5px] font-medium text-ink truncate">{k.name}</div>
+                <div className="font-mono text-[12px] text-ink-600 truncate mt-1 md:mt-0">
+                  {k.prefix}…
+                </div>
+                <div className="text-[12.5px] text-ink-600 mt-0.5 md:mt-0">
+                  {k.last_used_at
+                    ? new Date(k.last_used_at).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
+                    : <span className="text-ink-400">never</span>
+                  }
+                </div>
+                <div className="font-mono text-[12px] text-ink-500 mt-0.5 md:mt-0">
+                  {new Date(k.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}
+                </div>
+                <div className="mt-2 md:mt-0 md:text-right">
+                  <button
+                    onClick={() => revoke(k.id, k.prefix)}
+                    className="btn-quiet text-[12.5px] text-[rgb(252_165_165)] hover:text-[rgb(255_140_140)]"
+                  >
+                    Revoke
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         )}
 
-        <div className="mt-8 sheet p-5">
-          <h3 className="text-[14px] font-semibold mb-2">Using your key</h3>
-          <p className="text-[12px] text-ink-600 mb-3">
+        <section className="mt-10">
+          <div className="font-mono text-[10.5px] uppercase tracking-wider text-ink-500 mb-3">
+            Using your key
+          </div>
+          <p className="text-[13px] text-ink-600 mb-3 max-w-2xl">
             Pass the token as a Bearer header on every request to the public API.
           </p>
-          <pre className="text-[11px] font-mono bg-surface border border-ink-200 rounded px-3 py-2 overflow-x-auto">
-{`curl -X POST ${typeof window !== "undefined" ? window.location.origin : ""}/api/v1/campaigns/from-sheet \\
+          <CodeBlock language="bash" copyable>
+{`curl -X POST ${origin}/api/v1/campaigns/from-sheet \\
   -H "Authorization: Bearer eav_live_..." \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -188,9 +213,98 @@ export default function KeysPage() {
       {"email": "alex@acme.com", "name": "Alex", "company": "Acme"}
     ]
   }'`}
-          </pre>
-        </div>
+          </CodeBlock>
+        </section>
       </div>
     </AppShell>
+  );
+}
+
+/* ----------------------------------------------------------------------- */
+
+function ColHead({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="font-mono text-[10.5px] uppercase tracking-wider text-ink-500 font-medium">
+      {children}
+    </span>
+  );
+}
+
+function RevealedSecretCard({
+  label, description, secret, copied, onCopy, onDismiss,
+}: {
+  label: string;
+  description: string;
+  secret: string;
+  copied: boolean;
+  onCopy: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      className="rounded-2xl p-5 mb-6 border"
+      style={{
+        borderColor: "rgb(255 99 99 / 0.30)",
+        background: "rgb(255 99 99 / 0.05)",
+        boxShadow: "0 0 60px -20px rgb(255 99 99 / 0.30)",
+      }}
+    >
+      <div className="flex items-start gap-3">
+        <span
+          className="mt-0.5 grid place-items-center w-5 h-5 rounded-full shrink-0"
+          style={{ background: "rgb(255 99 99 / 0.18)", color: "rgb(255 140 140)" }}
+        >
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 9v4M12 16h.01" />
+          </svg>
+        </span>
+        <div className="flex-1 min-w-0">
+          <div className="text-[14px] font-semibold text-ink">{label}</div>
+          <p className="text-[12.5px] text-ink-600 mt-1 leading-relaxed">{description}</p>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2 mt-4 flex-wrap">
+        <code className="font-mono text-[12.5px] bg-paper border border-ink-200 rounded-lg px-3 py-2 flex-1 min-w-[200px] truncate text-ink">
+          {secret}
+        </code>
+        <button onClick={onCopy} className="btn-accent text-[12.5px] py-2">
+          {copied ? (
+            <>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M5 12l5 5L20 7" />
+              </svg>
+              Copied
+            </>
+          ) : (
+            "Copy"
+          )}
+        </button>
+        <button onClick={onDismiss} className="btn-quiet text-[12.5px]">
+          Dismiss
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SkeletonKeyList() {
+  return (
+    <div className="rounded-xl border border-ink-200 bg-paper overflow-hidden">
+      {Array.from({ length: 3 }).map((_, i) => (
+        <div
+          key={i}
+          className={`grid grid-cols-[1.4fr,1fr,1fr,1fr,auto] gap-3 items-center px-4 py-3 ${
+            i < 2 ? "border-b border-ink-100" : ""
+          }`}
+        >
+          <div className="h-3 w-2/3 rounded bg-ink-100 animate-pulse" />
+          <div className="h-3 w-1/2 rounded bg-ink-100 animate-pulse" />
+          <div className="h-3 w-2/3 rounded bg-ink-100 animate-pulse" />
+          <div className="h-3 w-1/2 rounded bg-ink-100 animate-pulse" />
+          <div className="h-7 w-14 rounded bg-ink-100 animate-pulse" />
+        </div>
+      ))}
+    </div>
   );
 }

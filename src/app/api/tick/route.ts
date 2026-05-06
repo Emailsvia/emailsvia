@@ -149,7 +149,11 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
     // campaigns can't sneak past the 50/day ceiling.
     const quota = await assertCanSend(db, c.user_id, now, tz);
     if (!quota.ok) {
-      skipped.push({ id: c.id, name: c.name, reason: "plan_daily_cap_reached" });
+      skipped.push({
+        id: c.id,
+        name: c.name,
+        reason: quota.reason === "suspended" ? "tenant_suspended" : "plan_daily_cap_reached",
+      });
       continue;
     }
     planByUser.set(c.user_id, quota.plan);

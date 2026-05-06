@@ -38,6 +38,7 @@ export type Subscription = {
   status: string;
   current_period_end: string | null;
   cancel_at_period_end: boolean;
+  suspended_at: string | null;
   stripe_customer_id: string | null;
   stripe_sub_id: string | null;
 };
@@ -71,7 +72,7 @@ export async function getPlanForUser(
 ): Promise<{ plan: Plan; subscription: Subscription | null }> {
   const { data: sub } = await db
     .from("subscriptions")
-    .select("user_id, plan_id, status, current_period_end, cancel_at_period_end, stripe_customer_id, stripe_sub_id")
+    .select("user_id, plan_id, status, current_period_end, cancel_at_period_end, suspended_at, stripe_customer_id, stripe_sub_id")
     .eq("user_id", userId)
     .maybeSingle();
 
@@ -112,7 +113,8 @@ export async function getPlan(db: SupabaseClient, userId: string): Promise<Plan>
 
 export type CanSendResult =
   | { ok: true; plan: Plan; sentToday: number; remaining: number }
-  | { ok: false; reason: "daily_cap_reached"; plan: Plan; sentToday: number };
+  | { ok: false; reason: "daily_cap_reached"; plan: Plan; sentToday: number }
+  | { ok: false; reason: "suspended"; plan: Plan; sentToday: number };
 
 // Called from the tick path before a send. Cron uses the service-role
 // client which bypasses RLS — the caller passes that in.
@@ -124,7 +126,13 @@ export async function assertCanSend(
   // boundary matches the campaign-cap day boundary.
   tz: string
 ): Promise<CanSendResult> {
-  const { plan } = await getPlanForUser(db, userId);
+  const { plan, subscription } = await getPlanForUser(db, userId);
+  // Operator-suspended tenants are blocked at the cron edge so a misbehaving
+  // user can't send another byte while we resolve their issue. Stripe state
+  // is untouched.
+  if (subscription?.suspended_at) {
+    return { ok: false, reason: "suspended", plan, sentToday: 0 };
+  }
   const day = dayKey(now, tz);
   const { data: row } = await db
     .from("usage_daily")

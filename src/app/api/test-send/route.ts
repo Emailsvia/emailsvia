@@ -29,6 +29,18 @@ export async function POST(req: NextRequest) {
   const u = await getUser();
   if (!u) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
+  // Operator-suspended tenants are blocked from sending anything, including
+  // test sends. The user can still log in and explore — they just can't put
+  // mail on the wire.
+  const { data: suspended } = await supabaseAdmin()
+    .from("subscriptions")
+    .select("suspended_at")
+    .eq("user_id", u.id)
+    .maybeSingle();
+  if (suspended?.suspended_at) {
+    return NextResponse.json({ error: "account_suspended" }, { status: 403 });
+  }
+
   const contentType = req.headers.get("content-type") ?? "";
   const isMultipart = contentType.includes("multipart/form-data");
 

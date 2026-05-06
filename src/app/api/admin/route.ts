@@ -6,7 +6,7 @@ import { isAdminUser } from "@/lib/admin";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Admin metrics endpoint backing /app/admin. Returns aggregate operator-side
+// Admin metrics endpoint backing /admin. Returns aggregate operator-side
 // numbers (MRR, daily sends, error rate, signups, free→paid conversion) so
 // the dashboard can render without a per-card round-trip.
 //

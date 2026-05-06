@@ -16,7 +16,6 @@ const TIERS = [
     senders: "1 sender",
     highlights: [
       "1 sender",
-      "EmailsVia watermark",
       "100-row imports",
       "Tracking + scheduling",
     ],
@@ -33,7 +32,6 @@ const TIERS = [
       "Threaded follow-ups",
       "Warmup included",
       "Tracking + scheduling",
-      "No watermark",
       "Unlimited row imports",
     ],
     cta: "Start free → upgrade",

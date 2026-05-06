@@ -13,7 +13,6 @@ export type Plan = {
   daily_cap: number;
   sender_limit: number;
   monthly_price_cents: number;
-  watermark: boolean;
   features: PlanFeatures;
 };
 
@@ -49,7 +48,6 @@ const FREE_FALLBACK: Plan = {
   daily_cap: 50,
   sender_limit: 1,
   monthly_price_cents: 0,
-  watermark: true,
   features: {
     follow_ups: false,
     ai: false,
@@ -85,7 +83,7 @@ export async function getPlanForUser(
 
   const { data: row } = await db
     .from("plans")
-    .select("id, name, daily_cap, sender_limit, monthly_price_cents, watermark, features")
+    .select("id, name, daily_cap, sender_limit, monthly_price_cents, features")
     .eq("id", planId)
     .maybeSingle();
 
@@ -96,7 +94,6 @@ export async function getPlanForUser(
         daily_cap: row.daily_cap,
         sender_limit: row.sender_limit,
         monthly_price_cents: row.monthly_price_cents,
-        watermark: row.watermark,
         features: (row.features ?? {}) as PlanFeatures,
       }
     : FREE_FALLBACK;

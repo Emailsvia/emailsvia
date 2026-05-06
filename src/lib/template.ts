@@ -55,9 +55,6 @@ export function toHtml(
     wrapUrl?: (url: string) => string;
     openPixelUrl?: string;
     unsubscribeUrl?: string;
-    // Free-tier "Sent with EmailsVia" footer. Removed automatically the
-    // moment a user upgrades to any paid tier.
-    watermark?: boolean;
   }
 ) {
   // Full markdown parsing — bold, italic, strike, headings, lists, links, quotes, code.
@@ -72,9 +69,6 @@ export function toHtml(
   const footer = opts?.unsubscribeUrl
     ? `<div style="margin-top:24px;padding-top:12px;border-top:1px solid #eee;color:#888;font-size:11px;">If you'd rather not hear from me, <a href="${escapeAttr(opts.unsubscribeUrl)}" style="color:#888;">unsubscribe</a>.</div>`
     : "";
-  const watermark = opts?.watermark
-    ? `<div style="margin-top:18px;color:#999;font-size:11px;">Sent with <a href="https://emailsvia.com" style="color:#999;">EmailsVia</a> &mdash; <a href="https://emailsvia.com" style="color:#999;">try free</a></div>`
-    : "";
   const pixel = opts?.openPixelUrl
     ? `<img src="${escapeAttr(opts.openPixelUrl)}" width="1" height="1" alt="" style="display:block;border:0;opacity:0;" />`
     : "";
@@ -84,7 +78,6 @@ export function toHtml(
     'font-size:14px;line-height:1.55;color:#222;">' +
     html +
     footer +
-    watermark +
     pixel +
     "</div>"
   );
@@ -92,7 +85,7 @@ export function toHtml(
 
 export function toPlain(
   text: string,
-  opts?: { unsubscribeUrl?: string; watermark?: boolean }
+  opts?: { unsubscribeUrl?: string }
 ) {
   // Strip markdown markers for the plain-text part
   let out = text
@@ -105,6 +98,5 @@ export function toPlain(
     .replace(/^#{1,6}\s+/gm, "")
     .replace(/^>\s?/gm, "");
   if (opts?.unsubscribeUrl) out += `\n\n---\nUnsubscribe: ${opts.unsubscribeUrl}`;
-  if (opts?.watermark) out += "\n\nSent with EmailsVia — https://emailsvia.com";
   return out;
 }

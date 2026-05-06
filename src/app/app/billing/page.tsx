@@ -11,7 +11,6 @@ type Plan = {
   daily_cap: number;
   sender_limit: number;
   monthly_price_cents: number;
-  watermark: boolean;
   features: Record<string, unknown>;
 };
 
@@ -48,7 +47,7 @@ const TIERS: Array<{
     price: "$0",
     cap: 50,
     senders: 1,
-    highlights: ["50 sends / day", "1 sender", "EmailsVia watermark", "100-row imports"],
+    highlights: ["50 sends / day", "1 sender", "100-row imports"],
     cta: "current",
   },
   {

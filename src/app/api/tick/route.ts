@@ -582,12 +582,8 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
     ? (url: string) => `${base}/api/t/c/${signToken("c", recipient.id)}?u=${encodeURIComponent(url)}`
     : undefined;
 
-  // Free-tier watermark: appended to body (HTML + plain) at the same site
-  // as the unsubscribe footer / tracking pixel. Plan was already resolved
-  // in the AI-personalization step above (planForUser).
-  const watermark = !!planForUser?.watermark;
-  const html = toHtml(body, { wrapUrl, openPixelUrl, unsubscribeUrl: unsubUrl, watermark });
-  const text = toPlain(body, { unsubscribeUrl: unsubUrl, watermark });
+  const html = toHtml(body, { wrapUrl, openPixelUrl, unsubscribeUrl: unsubUrl });
+  const text = toPlain(body, { unsubscribeUrl: unsubUrl });
 
   // ---- attachments (up to 5 files per campaign) ----
   let attachments: { filename: string; content: Buffer }[] | undefined;

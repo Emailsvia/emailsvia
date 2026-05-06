@@ -4,18 +4,9 @@ import { useState } from "react";
 
 type QA = { q: string; a: React.ReactNode };
 
+// NOTE: keep `q` as plain Unicode — JSX renders HTML entities only inside
+// markup, not inside string literals. Smart quotes go in directly.
 const ITEMS: QA[] = [
-  {
-    q: "Is this just Mailmeteor with a coat of paint?",
-    a: (
-      <>
-        Mailmeteor is a great tool — we used it for years. We took the parts we loved
-        (mail merge from your Gmail), fixed the parts we didn&rsquo;t (broken merges
-        going out as <em>&ldquo;Hi ,&rdquo;</em>), and stopped charging extra for things
-        you should never pay for separately (warmup). Use whichever feels right.
-      </>
-    ),
-  },
   {
     q: "Will Google flag my account if I send 500 a day?",
     a: (
@@ -46,7 +37,7 @@ const ITEMS: QA[] = [
     ),
   },
   {
-    q: "Why &ldquo;via your Gmail&rdquo; — what&rsquo;s the catch?",
+    q: "Why “via your Gmail” — what’s the catch?",
     a: (
       <>
         No catch. Cold-email tools that send from <em>their</em> infrastructure are
@@ -68,7 +59,7 @@ const ITEMS: QA[] = [
     ),
   },
   {
-    q: "What about Google&rsquo;s OAuth verification?",
+    q: "What about Google’s OAuth verification?",
     a: (
       <>
         We&rsquo;re in submission for Sensitive-Scope review. Until that&rsquo;s
@@ -89,6 +80,28 @@ const ITEMS: QA[] = [
     ),
   },
   {
+    q: "Can I import from a CSV or Excel file?",
+    a: (
+      <>
+        Yes. Drop in a <code className="m-mono text-[12px]">.csv</code> or{" "}
+        <code className="m-mono text-[12px]">.xlsx</code>, or paste a Google Sheets
+        URL — same flow either way. Headers become merge tags, you preview the first
+        few rows before sending.
+      </>
+    ),
+  },
+  {
+    q: "How does inbox rotation actually work?",
+    a: (
+      <>
+        On Scale, one campaign can send across up to 10 connected Gmails. We pick
+        the least-loaded eligible sender for each recipient, and stick the same
+        sender to that recipient for follow-ups so threading never breaks. No
+        per-sender quota math on your end.
+      </>
+    ),
+  },
+  {
     q: "Can I use my own domain for tracking links?",
     a: (
       <>
@@ -97,19 +110,6 @@ const ITEMS: QA[] = [
         affect your inbox.
       </>
     ),
-  },
-  {
-    q: "Is there a money-back guarantee?",
-    a: (
-      <>
-        First 14 days, full refund, no questions, no exit survey, no &ldquo;wait, can
-        we just hop on a quick call?&rdquo;
-      </>
-    ),
-  },
-  {
-    q: "Do you email me on Sundays?",
-    a: <>No. We don&rsquo;t even email on Saturdays. The only exception is if your account is broken and we need to tell you.</>,
   },
 ];
 

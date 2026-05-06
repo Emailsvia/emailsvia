@@ -103,16 +103,15 @@ function Footer() {
           </div>
 
           <FooterCol title="Product">
-            <FooterLink href="#features">Features</FooterLink>
-            <FooterLink href="#audiences">Use cases</FooterLink>
+            <FooterLink href="/#features">Features</FooterLink>
+            <FooterLink href="/#audiences">Use cases</FooterLink>
             <FooterLink href="/pricing">Pricing</FooterLink>
-            <FooterLink href="#faq">FAQ</FooterLink>
+            <FooterLink href="/#faq">FAQ</FooterLink>
           </FooterCol>
 
-          <FooterCol title="Compare">
-            <FooterLink href="/pricing#compare">vs Mailmeteor</FooterLink>
-            <FooterLink href="/pricing#compare">vs GMass</FooterLink>
-            <FooterLink href="/pricing#compare">vs Instantly</FooterLink>
+          <FooterCol title="Resources">
+            <FooterLink href="/#how">How it works</FooterLink>
+            <FooterLink href="mailto:hello@emailsvia.com">Get support</FooterLink>
           </FooterCol>
 
           <FooterCol title="Company">

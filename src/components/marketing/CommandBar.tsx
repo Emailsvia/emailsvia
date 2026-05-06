@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 
 /**
  * Raycast-style command bar. Triggered by ⌘K / Ctrl-K, by clicking
@@ -22,16 +23,18 @@ type Item = {
 const ITEMS: Item[] = [
   { id: "signup",   label: "Start free",                  hint: "50 sends a day, no card",   href: "/signup",      shortcut: ["⏎"],         group: "Get started", icon: <IconSpark /> },
   { id: "login",    label: "Sign in",                     hint: "Welcome back",              href: "/login",                                 group: "Get started", icon: <IconKey /> },
+  { id: "features", label: "Features",                    hint: "What's in the box",         href: "/#features",                             group: "Navigate",    icon: <IconBook /> },
+  { id: "how",      label: "How it works",                hint: "4 minutes, start to send",  href: "/#how",                                  group: "Navigate",    icon: <IconBook /> },
+  { id: "audiences",label: "Use cases",                   hint: "Pick your role",            href: "/#audiences",                            group: "Navigate",    icon: <IconUser /> },
+  { id: "faq",      label: "FAQ",                         hint: "Honest answers",            href: "/#faq",                                  group: "Navigate",    icon: <IconBook /> },
   { id: "pricing",  label: "Pricing",                     hint: "Free → $39",                href: "/pricing",                               group: "Navigate",    icon: <IconTag /> },
-  { id: "founders", label: "For founders",                hint: "Doing it yourself",         href: "/?role=founders",                        group: "Use cases",   icon: <IconUser /> },
-  { id: "sales",    label: "For sales teams",             hint: "Inbox rotation, A/B",       href: "/?role=sales",                           group: "Use cases",   icon: <IconUser /> },
-  { id: "rec",      label: "For recruiters",              hint: "Threaded follow-ups",       href: "/?role=recruiters",                      group: "Use cases",   icon: <IconUser /> },
-  { id: "jobs",     label: "For job seekers",             hint: "Outreach that gets read",   href: "/?role=jobseekers",                      group: "Use cases",   icon: <IconUser /> },
-  { id: "support",  label: "For customer support",        hint: "Proactive check-ins",       href: "/?role=support",                         group: "Use cases",   icon: <IconUser /> },
-  { id: "free",     label: "For freelancers",             hint: "$9, no CRM",                href: "/?role=freelancers",                     group: "Use cases",   icon: <IconUser /> },
-  { id: "mkt",      label: "For marketers",               hint: "1:1 outbound that scales",  href: "/?role=marketers",                       group: "Use cases",   icon: <IconUser /> },
-  { id: "docs",     label: "How it works",                hint: "Open the explainer",        href: "#how",                                   group: "Resources",   icon: <IconBook /> },
-  { id: "compare",  label: "Compare to Mailmeteor",       hint: "Honest matrix",             href: "/pricing#compare",                       group: "Resources",   icon: <IconScale /> },
+  { id: "founders", label: "For founders",                hint: "Doing it yourself",         href: "/?role=founders#audiences",              group: "Use cases",   icon: <IconUser /> },
+  { id: "sales",    label: "For sales teams",             hint: "Inbox rotation, A/B",       href: "/?role=sales#audiences",                 group: "Use cases",   icon: <IconUser /> },
+  { id: "rec",      label: "For recruiters",              hint: "Threaded follow-ups",       href: "/?role=recruiters#audiences",            group: "Use cases",   icon: <IconUser /> },
+  { id: "jobs",     label: "For job seekers",             hint: "Outreach that gets read",   href: "/?role=jobseekers#audiences",            group: "Use cases",   icon: <IconUser /> },
+  { id: "support",  label: "For customer support",        hint: "Proactive check-ins",       href: "/?role=support#audiences",               group: "Use cases",   icon: <IconUser /> },
+  { id: "free",     label: "For freelancers",             hint: "$9, no CRM",                href: "/?role=freelancers#audiences",           group: "Use cases",   icon: <IconUser /> },
+  { id: "mkt",      label: "For marketers",               hint: "1:1 outbound that scales",  href: "/?role=marketers#audiences",             group: "Use cases",   icon: <IconUser /> },
   { id: "privacy",  label: "Privacy",                     href: "/privacy",                                                                  group: "Resources",   icon: <IconShield /> },
   { id: "terms",    label: "Terms",                       href: "/terms",                                                                    group: "Resources",   icon: <IconScale /> },
 ];
@@ -60,6 +63,46 @@ export default function CommandBar() {
   const [selected, setSelected] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const router = useRouter();
+  const pathname = usePathname();
+
+  // Navigate to a command-bar item. Smooth-scrolls in-place if the target is
+  // a hash on the current page; otherwise uses the Next router so we get a
+  // proper client-side transition. Closes the bar either way.
+  function go(href: string) {
+    setOpen(false);
+    if (!href) return;
+
+    const url = new URL(href, window.location.origin);
+    const samePage = url.pathname === pathname;
+    const role = url.searchParams.get("role");
+    const hash = url.hash.replace(/^#/, "");
+
+    const scrollToHash = () => {
+      if (!hash) return;
+      // Wait one frame so any route change settles before measuring.
+      window.requestAnimationFrame(() => {
+        const el = document.getElementById(hash);
+        if (!el) return;
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    };
+
+    if (samePage) {
+      // Stay client-side: just update the URL + scroll.
+      const next = url.pathname + url.search + url.hash;
+      window.history.replaceState({}, "", next);
+      // Notify any listeners that the role param changed (AudienceTabs).
+      if (role) {
+        window.dispatchEvent(new CustomEvent("emv:role", { detail: role }));
+      }
+      scrollToHash();
+    } else {
+      router.push(url.pathname + url.search + url.hash);
+      // After the transition, scroll. AudienceTabs reads the URL on mount.
+      window.setTimeout(scrollToHash, 80);
+    }
+  }
 
   // Open via shortcut, custom event, or hint click
   useEffect(() => {
@@ -132,8 +175,8 @@ export default function CommandBar() {
     } else if (e.key === "Enter") {
       const item = flat[selected];
       if (item?.href) {
-        window.location.assign(item.href);
-        setOpen(false);
+        e.preventDefault();
+        go(item.href);
       }
     }
   };
@@ -176,9 +219,13 @@ export default function CommandBar() {
               setSelected(0);
             }}
             placeholder="Type a command, page, or audience…"
-            className="flex-1 bg-transparent outline-none text-[15px] text-[rgb(244_244_245)] placeholder:text-[rgb(113_113_122)]"
+            className="flex-1 bg-transparent text-[15px] text-[rgb(244_244_245)] placeholder:text-[rgb(113_113_122)]"
             spellCheck={false}
             autoComplete="off"
+            // Inline overrides the global .marketing-canvas *:focus-visible
+            // coral outline — the input itself is the visible focus target,
+            // a ring on top is just noise.
+            style={{ outline: "none", boxShadow: "none" }}
           />
           <kbd className="m-mono text-[11px] inline-grid place-items-center h-[20px] px-1.5 rounded border border-[rgb(255_255_255/0.12)] bg-[rgb(255_255_255/0.04)] text-[rgb(161_161_170)]">esc</kbd>
         </div>
@@ -215,7 +262,14 @@ export default function CommandBar() {
                         key={it.id}
                         href={it.href || "#"}
                         data-idx={idx}
-                        onClick={() => setOpen(false)}
+                        onClick={(e) => {
+                          if (it.href) {
+                            e.preventDefault();
+                            go(it.href);
+                          } else {
+                            setOpen(false);
+                          }
+                        }}
                         onMouseEnter={() => setSelected(idx)}
                         className={`group flex items-center gap-3 mx-1 px-3 py-2 rounded-lg cursor-pointer transition-colors ${
                           isSel

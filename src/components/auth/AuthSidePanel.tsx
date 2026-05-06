@@ -15,7 +15,7 @@ const COPY: Record<Variant, { eyebrow: string; headline: React.ReactNode; sub: s
     ),
     sub: "Pick up where you left off. Campaigns paused since you last signed in are sitting at the gate, ready when you are.",
     quote:
-      "I sent more thoughtful cold emails in a week with EmailsVia than I did in a year of fighting Mailmeteor. The threading alone is worth $9.",
+      "First tool that actually thinks about deliverability instead of just throwing more sends at the problem. The threading alone is worth $9.",
     quoteAttr: "Maya P. · founder, design tools",
   },
   join: {
@@ -27,9 +27,9 @@ const COPY: Record<Variant, { eyebrow: string; headline: React.ReactNode; sub: s
         <span className="m-gradient-text">Zero spam folders.</span>
       </>
     ),
-    sub: "Send 50 personalized emails a day, free forever. No card. No timer. No upsell on Sundays. When you outgrow it, we'll be here.",
+    sub: "Send 50 personalized emails a day, free forever. No card. No timer. When you outgrow it, we&rsquo;ll be here.",
     quote:
-      "We tried Instantly, Smartlead, and Lemlist. Switched to EmailsVia in week three and never looked back. The strict-merge alone saved a 800-row campaign.",
+      "Tried half a dozen outbound tools. Switched in week three and never looked back. The strict-merge alone saved an 800-row campaign.",
     quoteAttr: "Theo N. · head of growth",
   },
 };

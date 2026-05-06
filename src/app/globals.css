@@ -348,6 +348,11 @@ input[type="time"], input[type="date"], input[type="number"], input[type="dateti
   font-feature-settings: "ss01", "ss02", "cv11";
 }
 
+/* Smooth scrolling for hash-link navigation on marketing pages, with
+   enough top offset to clear the floating glass nav. */
+html:has(.marketing-canvas) { scroll-behavior: smooth; }
+.marketing-canvas section[id] { scroll-margin-top: 96px; }
+
 /* Force the canvas color even when html/body is light */
 .marketing-canvas,
 .marketing-canvas * {
@@ -617,14 +622,15 @@ input[type="time"], input[type="date"], input[type="number"], input[type="dateti
 
 /* ----- Marquee / logo strip ----- */
 @keyframes m-marquee {
-  from { transform: translateX(0); }
-  to   { transform: translateX(-50%); }
+  from { transform: translateX(-50%); }
+  to   { transform: translateX(0); }
 }
 .m-marquee {
   display: flex;
-  gap: 3rem;
+  gap: 4rem;
   width: max-content;
-  animation: m-marquee 38s linear infinite;
+  animation: m-marquee 180s linear infinite;
+  will-change: transform;
 }
 .m-marquee:hover { animation-play-state: paused; }
 
@@ -643,43 +649,33 @@ input[type="time"], input[type="date"], input[type="number"], input[type="dateti
   animation: m-caret 1.05s steps(1) infinite;
 }
 
-/* ----- Floating orbs (deliberately quiet) ----- */
-@keyframes m-float-a {
-  0%, 100% { transform: translate(0, 0) scale(1); }
-  50%      { transform: translate(40px, -20px) scale(1.05); }
-}
-@keyframes m-float-b {
-  0%, 100% { transform: translate(0, 0) scale(1); }
-  50%      { transform: translate(-30px, 30px) scale(0.95); }
-}
+/* ----- Ambient orbs (static) -----
+   Soft warm glows positioned absolutely behind hero-class sections. Pure
+   decorative gradient — no motion, no flicker. */
 .m-orb {
   position: absolute;
   border-radius: 999px;
-  filter: blur(80px);
+  filter: blur(90px);
   opacity: 0.55;
   pointer-events: none;
 }
 .m-orb-coral {
   background: radial-gradient(circle, rgb(var(--m-coral) / 0.55), transparent 70%);
-  animation: m-float-a 22s cubic-bezier(0.45, 0, 0.55, 1) infinite;
 }
 .m-orb-amber {
   background: radial-gradient(circle, rgb(var(--m-amber) / 0.45), transparent 70%);
-  animation: m-float-b 26s cubic-bezier(0.45, 0, 0.55, 1) infinite;
 }
 
-/* ----- Reduced motion respect ----- */
+/* ----- Reduced motion respect -----
+   Only kill scroll-triggered reveals (those fire as the user moves and can
+   feel jumpy). Everything else — ambient orbs, marquee (pausable on hover),
+   pulsing dots, blinking caret — is calm, low-amplitude, decorative motion
+   that sits well within WCAG 2.3.3's tolerance for vestibular triggers. */
 @media (prefers-reduced-motion: reduce) {
-  .marketing-canvas .m-orb,
-  .marketing-canvas .m-pill-dot,
-  .marketing-canvas .m-marquee,
-  .marketing-canvas .m-caret {
-    animation: none !important;
-  }
-  .marketing-canvas .m-spotlight { transition: none !important; }
   .marketing-canvas .m-reveal {
     opacity: 1 !important;
     transform: none !important;
+    transition: none !important;
   }
 }
 

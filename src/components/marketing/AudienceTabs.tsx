@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 /**
  * Built-for-you tab switcher. Reads the URL ?role= param on mount via the
@@ -18,6 +18,22 @@ type Persona = {
 };
 
 const PERSONAS: Persona[] = [
+  {
+    id: "jobseekers",
+    label: "Job seekers",
+    pain: "Stop refreshing your inbox at 11pm.",
+    copy: [
+      "You wrote forty thoughtful cold emails to hiring managers this week. Two replied. Three bounced. The rest sit in some VP's inbox, marked unread, until they aren't.",
+      "We thread your follow-ups so the second touch shows up <em>under the original</em>, not as a fresh pitch they have to remember. Track who opens. Tell you the moment a reply lands. Your search ends faster.",
+    ],
+    sample: {
+      caption: "Job hunt · 40 hiring managers · 3-step",
+      subject: "Senior PM at {{Company}} — quick intro",
+      pill: "Step 2 fires: no reply in 3 days",
+      metric: "28% open rate",
+    },
+    plan: { name: "Free", price: "50/day" },
+  },
   {
     id: "founders",
     label: "Founders",
@@ -37,9 +53,9 @@ const PERSONAS: Persona[] = [
   {
     id: "sales",
     label: "Sales / SDRs",
-    pain: "Your tool charges for the warmup it should include.",
+    pain: "Your tool charges extra for the basics.",
     copy: [
-      "Mailmeteor wants $25 extra for warmup. Instantly wants $37 minimum and a quarter of your life. You wanted to pilot 200 prospects this Tuesday — not sign a contract.",
+      "Other outbound tools charge for warmup, gate inbox rotation behind enterprise tiers, and lock you into a quarterly contract before you&rsquo;ve even sent your first 200 prospects. You wanted to pilot a list this Tuesday — not negotiate a procurement cycle.",
       "Run the pilot on us. Inbox rotation across 10 Gmails when you scale. Strict-merge so you never burn a row on <em>Hi ,</em>. AI triage that makes Monday morning feel like Friday.",
     ],
     sample: {
@@ -65,22 +81,6 @@ const PERSONAS: Persona[] = [
       metric: "21% reply rate",
     },
     plan: { name: "Growth", price: "$19/mo" },
-  },
-  {
-    id: "jobseekers",
-    label: "Job seekers",
-    pain: "Stop refreshing your inbox at 11pm.",
-    copy: [
-      "You wrote forty thoughtful cold emails to hiring managers this week. Two replied. Three bounced. The rest sit in some VP's inbox, marked unread, until they aren't.",
-      "We thread your follow-ups so the second touch shows up <em>under the original</em>, not as a fresh pitch they have to remember. Track who opens. Tell you the moment a reply lands. Your search ends faster.",
-    ],
-    sample: {
-      caption: "Job hunt · 40 hiring managers · 3-step",
-      subject: "Senior PM at {{Company}} — quick intro",
-      pill: "Step 2 fires: no reply in 3 days",
-      metric: "28% open rate",
-    },
-    plan: { name: "Free", price: "50/day" },
   },
   {
     id: "marketers",
@@ -135,6 +135,23 @@ const PERSONAS: Persona[] = [
 export default function AudienceTabs() {
   const [active, setActive] = useState(PERSONAS[0].id);
   const persona = PERSONAS.find((p) => p.id === active) ?? PERSONAS[0];
+
+  // Sync with the URL: ?role=founders sets the initial tab. Also listens for
+  // the `emv:role` event the CommandBar fires when navigating in-page.
+  useEffect(() => {
+    const ids = new Set(PERSONAS.map((p) => p.id));
+    const apply = (raw: string | null) => {
+      if (raw && ids.has(raw)) setActive(raw);
+    };
+    apply(new URLSearchParams(window.location.search).get("role"));
+
+    const onRole = (e: Event) => {
+      const detail = (e as CustomEvent<string>).detail;
+      apply(detail ?? null);
+    };
+    window.addEventListener("emv:role", onRole);
+    return () => window.removeEventListener("emv:role", onRole);
+  }, []);
 
   return (
     <div>

@@ -75,8 +75,8 @@ function Hero() {
         </Reveal>
 
         <Reveal delayMs={280} className="text-center mt-5">
-          <p className="text-[12.5px] text-[rgb(113_113_122)]">
-            No credit card. No trial timer. We don&rsquo;t email you on Sundays.
+          <p className="text-[13px] text-[rgb(161_161_170)]">
+            No credit card. No trial timer. Cancel any time, one click.
           </p>
         </Reveal>
 
@@ -86,7 +86,7 @@ function Hero() {
         </Reveal>
 
         <Reveal delayMs={440} className="mt-6 text-center">
-          <p className="m-mono text-[11.5px] text-[rgb(113_113_122)]">
+          <p className="m-mono text-[12px] text-[rgb(161_161_170)]">
             press <kbd className="inline-grid place-items-center min-w-[18px] h-[18px] px-1 mx-0.5 rounded border border-[rgb(255_255_255/0.12)] bg-[rgb(255_255_255/0.04)] text-[rgb(244_244_245)]">⌘</kbd>
             <kbd className="inline-grid place-items-center min-w-[18px] h-[18px] px-1 mx-0.5 rounded border border-[rgb(255_255_255/0.12)] bg-[rgb(255_255_255/0.04)] text-[rgb(244_244_245)]">K</kbd>
             anywhere on this page to navigate fast
@@ -104,16 +104,12 @@ function LogoStrip() {
   const tools = [
     "Linear",
     "Vercel",
-    "Attio",
-    "Raycast",
-    "Cursor",
     "Stripe",
     "Figma",
     "Notion",
-    "Supabase",
-    "Resend",
-    "Framer",
-    "Pitch",
+    "Raycast",
+    "Cursor",
+    "Attio",
   ];
   return (
     <section className="py-12 sm:py-14 border-y border-[rgb(255_255_255/0.06)] bg-[rgb(255_255_255/0.015)]">
@@ -122,20 +118,12 @@ function LogoStrip() {
           Outbound from teams that obsess over craft
         </p>
       </Reveal>
-      <div className="mt-7 overflow-hidden relative">
-        <div
-          className="absolute inset-y-0 left-0 w-24 z-10 pointer-events-none"
-          style={{ background: "linear-gradient(90deg, rgb(10 10 11), transparent)" }}
-        />
-        <div
-          className="absolute inset-y-0 right-0 w-24 z-10 pointer-events-none"
-          style={{ background: "linear-gradient(-90deg, rgb(10 10 11), transparent)" }}
-        />
-        <div className="m-marquee">
-          {[...tools, ...tools].map((t, i) => (
+      <div className="mt-7 mx-auto max-w-6xl px-5 sm:px-8">
+        <div className="flex items-center justify-center gap-x-8 sm:gap-x-12 gap-y-4 flex-wrap">
+          {tools.map((t) => (
             <span
-              key={i}
-              className="m-mono text-[18px] sm:text-[22px] text-[rgb(113_113_122)] hover:text-[rgb(244_244_245)] transition-colors whitespace-nowrap"
+              key={t}
+              className="m-mono text-[16px] sm:text-[20px] text-[rgb(161_161_170)] hover:text-[rgb(244_244_245)] transition-colors whitespace-nowrap"
             >
               {t}
             </span>
@@ -235,8 +223,8 @@ function SolutionSection() {
 
         {/* Diagram */}
         <Reveal delayMs={220} className="mt-12">
-          <div className="m-glass rounded-2xl p-6 sm:p-8">
-            <div className="flex items-center justify-center gap-3 sm:gap-6 flex-wrap">
+          <div className="m-glass rounded-2xl p-4 sm:p-8 overflow-x-auto sm:overflow-visible">
+            <div className="flex items-center justify-center gap-3 sm:gap-5 flex-nowrap min-w-max sm:min-w-0 mx-auto">
               <DiagNode label="Your Gmail" sub="you@yourdomain.com" />
               <DiagArrow />
               <DiagNodeAccent label="EmailsVia" sub="paced · validated · threaded" />
@@ -258,26 +246,35 @@ function SolutionSection() {
 
 function DiagNode({ label, sub }: { label: string; sub: string }) {
   return (
-    <div className="m-card-hairline rounded-xl px-4 py-3 text-left min-w-[160px]">
-      <div className="text-[14px] text-[rgb(244_244_245)] font-medium">{label}</div>
-      <div className="m-mono text-[11px] text-[rgb(113_113_122)] mt-0.5">{sub}</div>
+    <div className="m-card-hairline rounded-xl px-3.5 py-2.5 sm:px-4 sm:py-3 text-left shrink-0 whitespace-nowrap">
+      <div className="text-[13px] sm:text-[14px] text-[rgb(244_244_245)] font-medium">{label}</div>
+      <div className="m-mono text-[10.5px] sm:text-[11px] text-[rgb(161_161_170)] mt-0.5">{sub}</div>
     </div>
   );
 }
 function DiagNodeAccent({ label, sub }: { label: string; sub: string }) {
   return (
     <div
-      className="rounded-xl px-4 py-3 text-left min-w-[180px] m-gradient-border bg-[rgb(255_255_255/0.025)]"
+      className="rounded-xl px-3.5 py-2.5 sm:px-4 sm:py-3 text-left shrink-0 whitespace-nowrap m-gradient-border bg-[rgb(255_255_255/0.025)]"
       style={{ boxShadow: "0 0 60px -10px rgb(255 99 99 / 0.4)" }}
     >
-      <div className="text-[14px] m-gradient-text font-semibold">{label}</div>
-      <div className="m-mono text-[11px] text-[rgb(161_161_170)] mt-0.5">{sub}</div>
+      <div className="text-[13px] sm:text-[14px] m-gradient-text font-semibold">{label}</div>
+      <div className="m-mono text-[10.5px] sm:text-[11px] text-[rgb(161_161_170)] mt-0.5">{sub}</div>
     </div>
   );
 }
 function DiagArrow() {
   return (
-    <svg width="32" height="14" viewBox="0 0 32 14" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-[rgb(113_113_122)] hidden sm:block" aria-hidden>
+    <svg
+      width="28"
+      height="12"
+      viewBox="0 0 32 14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      className="text-[rgb(113_113_122)] shrink-0"
+      aria-hidden
+    >
       <path d="M0 7 H28 M22 1 L28 7 L22 13" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
@@ -357,7 +354,7 @@ function HowItWorks() {
         </div>
 
         <Reveal delayMs={300} className="mt-10 text-center">
-          <p className="m-mono text-[12px] text-[rgb(113_113_122)]">
+          <p className="m-mono text-[12.5px] text-[rgb(161_161_170)]">
             Average time to first send · <span className="text-[rgb(244_244_245)]">4 min 12 sec</span>
           </p>
         </Reveal>
@@ -534,7 +531,7 @@ function PricingSection() {
             <Bullet /> Annual: pay 10, get 12
           </span>
           <span className="inline-flex items-center gap-2">
-            <Bullet /> 14-day money-back, no exit interview
+            <Bullet /> Cancel any time from the dashboard
           </span>
           <span className="inline-flex items-center gap-2">
             <Bullet /> Tax handled by Stripe. USD.
@@ -608,7 +605,7 @@ function FinalCTA() {
           </Link>
         </Reveal>
         <Reveal delayMs={240}>
-          <p className="mt-5 m-mono text-[11.5px] text-[rgb(113_113_122)]">
+          <p className="mt-5 m-mono text-[12px] text-[rgb(161_161_170)]">
             no card · no timer · genuinely free for 50/day
           </p>
         </Reveal>

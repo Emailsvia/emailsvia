@@ -1,35 +1,28 @@
 import "server-only";
 import crypto from "crypto";
-import Anthropic from "@anthropic-ai/sdk";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { getAiProvider } from "./ai-provider";
 
 // AI personalization at template-render time. Users embed
 // `{{ai:Write a one-sentence opener referencing their role}}` in their
-// campaign body; we call Haiku per recipient to expand it.
+// campaign body; we call the configured AI provider per recipient to
+// expand it.
 //
 // Cached per (recipient_id, tag-text, prompt_hash) in ai_personalizations
 // so a re-render or retry never re-pays. Hard daily-cost cap per user
 // (configurable via env, defaults to 1000 calls/day) so a runaway
 // template can't blow up the bill.
 //
-// Best-effort: when Haiku is unavailable, the AI feature is plan-gated
-// off, or the daily cap is reached, the {{ai:...}} tag is replaced with
-// the empty string so the rest of the email still sends. The campaign
-// owner sees the issue surfaced via recipients.error / send_log.
+// Best-effort: when no provider is configured, the AI feature is plan-
+// gated off, or the daily cap is reached, the {{ai:...}} tag is replaced
+// with the empty string so the rest of the email still sends. The
+// campaign owner sees the issue surfaced via recipients.error / send_log.
 
 const AI_TAG = /\{\{\s*ai:([^}]+?)\s*\}\}/g;
 
 const DAILY_CAP = Number(process.env.AI_PERSONALIZATION_DAILY_CAP ?? "1000");
 
 const SYSTEM_PROMPT = `You generate a single short personalized text snippet for a cold-email campaign. The user describes WHAT they want; you produce only the snippet itself — no preamble, no explanation, no quotes, no markdown. One to three sentences max. Match the tone of natural professional email. If the recipient context is too sparse to do a good job, output a short, generic, harmless line (e.g. "Hope your week's going well") rather than making things up.`;
-
-let cached: Anthropic | null = null;
-function client(): Anthropic | null {
-  if (cached) return cached;
-  if (!process.env.ANTHROPIC_API_KEY) return null;
-  cached = new Anthropic();
-  return cached;
-}
 
 export type PersonalizeContext = {
   db: SupabaseClient;
@@ -171,11 +164,12 @@ async function generate(
   directive: string,
   vars: Record<string, string>
 ): Promise<{ text: string; tokens: number } | null> {
-  const c = client();
-  if (!c) return null;
-  // Build a compact context block. We prepend known well-known fields
-  // so Haiku sees structured info even when the campaign owner used
-  // arbitrary column names.
+  const provider = getAiProvider();
+  if (!provider) return null;
+
+  // Build a compact context block. We prepend well-known fields so the
+  // model sees structured info even when the campaign owner used arbitrary
+  // column names.
   const knownLines: string[] = [];
   if (vars.Name || vars["First Name"] || vars.FirstName) {
     knownLines.push(`Name: ${vars.Name ?? vars["First Name"] ?? vars.FirstName}`);
@@ -198,31 +192,11 @@ async function generate(
     `Goal: ${directive}`,
   ].join("\n");
 
-  try {
-    const res = await c.messages.create({
-      model: "claude-haiku-4-5",
-      max_tokens: 200,
-      system: [
-        {
-          type: "text",
-          text: SYSTEM_PROMPT,
-          cache_control: { type: "ephemeral" },
-        },
-      ],
-      messages: [{ role: "user", content: userMsg }],
-    });
-    // Pull plain text from the first content block.
-    const block = res.content.find((b) => b.type === "text");
-    if (!block || block.type !== "text") return null;
-    const text = block.text.trim();
-    if (!text) return null;
-    return {
-      text,
-      tokens: (res.usage.input_tokens ?? 0) + (res.usage.output_tokens ?? 0),
-    };
-  } catch {
-    return null;
-  }
+  return provider.complete({
+    system: SYSTEM_PROMPT,
+    user: userMsg,
+    maxTokens: 200,
+  });
 }
 
 // Convenience helper for the campaign editor / preview pane: tells the

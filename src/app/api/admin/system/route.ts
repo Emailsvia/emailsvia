@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getUser } from "@/lib/auth-server";
 import { supabaseAdmin } from "@/lib/supabase";
 import { isAdminUser } from "@/lib/admin";
+import { describeAiProviders } from "@/lib/ai-provider";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,7 +45,6 @@ export async function GET() {
   ]);
 
   const env = {
-    has_anthropic: Boolean(process.env.ANTHROPIC_API_KEY),
     has_postmark: Boolean(process.env.POSTMARK_SERVER_TOKEN),
     has_stripe: Boolean(process.env.STRIPE_SECRET_KEY),
     has_sentry: Boolean(process.env.NEXT_PUBLIC_SENTRY_DSN),
@@ -61,6 +61,7 @@ export async function GET() {
     errors_1h: errRes.count ?? 0,
     pending_deliveries: pendingDeliveries?.length ?? 0,
     env,
+    ai: describeAiProviders(),
     audit: audit ?? [],
   });
 }

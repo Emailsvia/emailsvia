@@ -1,19 +1,15 @@
 import "server-only";
-import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import { getAiProvider } from "./ai-provider";
 
 // AI reply triage. Used by /api/check-replies after a reply is saved (and
 // only for users on Growth or Scale). The intent label drives filter chips
 // on /app/replies and the future CRM webhook.
 //
-// Why claude-haiku-4-5: cheapest tier ($1/$5 per 1M tokens), more than
-// good enough for a 7-way classification on short text. We send only the
-// subject + first 500 chars of the body to keep cost predictable.
-//
-// Caching: the system prompt is identical across every classification
-// call. We mark it cacheable; with a few hundred replies/day across users
-// the prompt routinely stays warm in the 5-minute cache window.
+// Provider-agnostic — uses ai-provider.ts to call whichever LLM the
+// operator has configured (Groq / Gemini / Anthropic in cost order). Set
+// AI_PROVIDER to pin one explicitly. Without any provider key set, this
+// returns null and replies just don't get an intent label.
 
 export type ReplyIntent =
   | "interested"
@@ -145,21 +141,11 @@ Body: Could you send over a one-pager? I want to share with my team before we se
 → {"intent": "interested", "confidence": 0.84}
 `;
 
-let cached: Anthropic | null = null;
-function client() {
-  if (cached) return cached;
-  if (!process.env.ANTHROPIC_API_KEY) {
-    throw new Error("ANTHROPIC_API_KEY not set");
-  }
-  cached = new Anthropic();
-  return cached;
-}
-
 export type TriageResult = { intent: ReplyIntent; confidence: number };
 
-// Returns null on any failure (missing API key, model error, parse miss).
-// Triage is best-effort — a failed classification must never break reply
-// ingestion. The caller leaves intent_confidence null and moves on.
+// Returns null on any failure (no provider configured, API error, parse
+// miss). Triage is best-effort — a failed classification must never break
+// reply ingestion. The caller leaves intent_confidence null and moves on.
 export async function classifyReply(args: {
   subject: string | null;
   body: string | null;
@@ -170,34 +156,13 @@ export async function classifyReply(args: {
   const body = (args.body ?? "").slice(0, 500).trim();
   if (!subject && !body) return null;
 
-  if (!process.env.ANTHROPIC_API_KEY) return null;
+  const provider = getAiProvider();
+  if (!provider) return null;
 
-  try {
-    const res = await client().messages.parse({
-      model: "claude-haiku-4-5",
-      max_tokens: 128,
-      system: [
-        {
-          type: "text",
-          text: SYSTEM_PROMPT,
-          cache_control: { type: "ephemeral" },
-        },
-      ],
-      messages: [
-        {
-          role: "user",
-          content: `Subject: ${subject || "(none)"}\n\nBody:\n${body || "(empty)"}`,
-        },
-      ],
-      output_config: {
-        format: zodOutputFormat(IntentSchema),
-      },
-    });
-
-    const parsed = res.parsed_output;
-    if (!parsed) return null;
-    return { intent: parsed.intent, confidence: parsed.confidence };
-  } catch {
-    return null;
-  }
+  return provider.classify({
+    system: SYSTEM_PROMPT,
+    user: `Subject: ${subject || "(none)"}\n\nBody:\n${body || "(empty)"}`,
+    schema: IntentSchema,
+    maxTokens: 128,
+  });
 }

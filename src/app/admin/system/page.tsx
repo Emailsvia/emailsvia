@@ -10,7 +10,6 @@ type SystemData = {
   errors_1h: number;
   pending_deliveries: number;
   env: {
-    has_anthropic: boolean;
     has_postmark: boolean;
     has_stripe: boolean;
     has_sentry: boolean;
@@ -18,6 +17,12 @@ type SystemData = {
     has_oauth: boolean;
     has_encryption: boolean;
     app_url: string | null;
+  };
+  ai: {
+    active: "anthropic" | "gemini" | "groq" | null;
+    available: Array<"anthropic" | "gemini" | "groq">;
+    triage_model: string | null;
+    generate_model: string | null;
   };
   audit: Array<{
     id: number;
@@ -161,7 +166,6 @@ export default function AdminSystemPage() {
             <EnvLine ok={data.env.has_cron_secret} label="CRON_SECRET" />
             <EnvLine ok={data.env.has_stripe} label="Stripe" />
             <EnvLine ok={data.env.has_oauth} label="Google OAuth" />
-            <EnvLine ok={data.env.has_anthropic} label="Anthropic (AI triage)" />
             <EnvLine ok={data.env.has_postmark} label="Postmark (transactional)" />
             <EnvLine ok={data.env.has_sentry} label="Sentry" />
             <li className="flex items-center justify-between">
@@ -172,6 +176,45 @@ export default function AdminSystemPage() {
             </li>
           </ul>
         </div>
+      </div>
+
+      <div className="sheet p-4 mt-3">
+        <h2 className="text-[14px] font-semibold mb-3">AI provider</h2>
+        {!data.ai.active ? (
+          <p className="text-[13px] text-ink-500">
+            No AI provider configured. Reply triage and{" "}
+            <code className="text-[11px]">{`{{ai:...}}`}</code> personalization are
+            inactive. Set <code>GROQ_API_KEY</code>, <code>GEMINI_API_KEY</code>, or{" "}
+            <code>ANTHROPIC_API_KEY</code> to enable.
+          </p>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1.5 text-[13px]">
+            <div className="flex items-center justify-between">
+              <span className="text-ink-500">Active</span>
+              <span className="capitalize text-emerald-700">{data.ai.active}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-ink-500">Available keys</span>
+              <span className="font-mono text-[11px]">
+                {data.ai.available.length > 0
+                  ? data.ai.available.join(" · ")
+                  : "—"}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-ink-500">Triage model</span>
+              <span className="font-mono text-[11px] truncate">
+                {data.ai.triage_model ?? "—"}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-ink-500">Generate model</span>
+              <span className="font-mono text-[11px] truncate">
+                {data.ai.generate_model ?? "—"}
+              </span>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="sheet p-4 mt-3">

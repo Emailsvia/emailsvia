@@ -78,11 +78,22 @@ function homeFor(isAdmin: boolean): string {
 }
 
 export async function middleware(req: NextRequest) {
-  const { pathname } = req.nextUrl;
+  const { pathname, searchParams } = req.nextUrl;
 
   // API routes — handlers do their own auth.
   if (pathname.startsWith("/api/")) {
     return NextResponse.next();
+  }
+
+  // Supabase OAuth completion safety net: if a Supabase project is misconfigured
+  // and drops the ?code= on the root path instead of /auth/callback, forward it
+  // to the proper handler so the session gets exchanged. The fix should still
+  // happen in Supabase Dashboard → Authentication → URL Configuration → add
+  // `${APP_URL}/auth/callback` to the Redirect URLs allowlist.
+  if (pathname === "/" && searchParams.has("code")) {
+    const redirect = req.nextUrl.clone();
+    redirect.pathname = "/auth/callback";
+    return NextResponse.redirect(redirect);
   }
 
   // Always-public pages — no session needed.

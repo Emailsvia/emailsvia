@@ -1,20 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
 
-  "crons": [
-    {
-      "path": "/api/tick",
-      "schedule": "* * * * *"
-    },
-    {
-      "path": "/api/check-replies",
-      "schedule": "*/5 * * * *"
-    },
-    {
-      "path": "/api/cron/refresh-tokens",
-      "schedule": "7 * * * *"
-    }
-  ],
+  "// crons": "Vercel Hobby tier only allows daily crons. We use Supabase pg_cron instead — see supabase/cron.sql. Apply that file in Supabase SQL editor and the schedules below will fire from there: /api/tick every minute, /api/check-replies every 5 minutes, /api/cron/refresh-tokens hourly. To switch back to Vercel-native cron later (Pro plan), restore the `crons` block from git history.",
 
   "functions": {
     "src/app/api/tick/route.ts": { "maxDuration": 60 },

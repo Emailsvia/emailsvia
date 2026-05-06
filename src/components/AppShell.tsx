@@ -6,6 +6,7 @@ import { useState } from "react";
 import ThemeToggle from "@/components/ThemeToggle";
 import Logo from "@/components/Logo";
 import CommandPalette from "@/components/CommandPalette";
+import AppAlerts from "@/components/AppAlerts";
 
 const NAV = [
   { href: "/app", label: "Campaigns", icon: CampaignIcon },
@@ -117,6 +118,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
       {/* main */}
       <main className="flex-1 md:ml-60 pt-12 md:pt-0 min-w-0">
+        <AppAlerts />
         {children}
       </main>
 

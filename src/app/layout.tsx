@@ -31,14 +31,13 @@ export const metadata: Metadata = {
   description: "Send personalized campaigns on a schedule.",
 };
 
+// Dark-only product. The theme attribute is set inline so the first paint
+// is dark — no light-mode flash on slow connections. We deliberately don't
+// expose a toggle: the design system, marketing canvas, and component
+// tokens are all built dark-native.
 const themeScript = `
   (function () {
-    try {
-      var t = localStorage.getItem('theme') || 'auto';
-      var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-      var effective = t === 'dark' || (t === 'auto' && prefersDark) ? 'dark' : 'light';
-      document.documentElement.dataset.theme = effective;
-    } catch (e) {}
+    try { document.documentElement.dataset.theme = 'dark'; } catch (e) {}
   })();
 `;
 

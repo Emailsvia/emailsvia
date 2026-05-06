@@ -9,6 +9,7 @@ import ScheduleEditor from "@/components/ScheduleEditor";
 import { spamCheck, spamLevel } from "@/lib/spam";
 import BodyEditor, { type BodyEditorHandle } from "@/components/BodyEditor";
 import DateTimePicker from "@/components/DateTimePicker";
+import PageHeader from "@/components/app/PageHeader";
 
 type Sender = { id: string; label: string; email: string; from_name: string | null; is_default: boolean };
 type SampleRow = { name: string; company: string; email: string; vars: Record<string, string> };
@@ -479,20 +480,31 @@ export default function CampaignForm({
 
   return (
     <div className="page">
-      <div className="flex items-start justify-between gap-4 pb-5 mb-6 border-b border-ink-200">
-        <div>
-          <Link href={mode === "edit" ? `/campaigns/${initial?.id}` : "/"} className="btn-link text-[12px] mb-1 inline-flex">
-            ← {mode === "edit" ? "Back to campaign" : "Back to campaigns"}
-          </Link>
-          <h1 className="text-[24px] font-bold tracking-tight">{mode === "new" ? "New campaign" : "Edit campaign"}</h1>
-        </div>
-        <div className="flex items-center gap-2">
-          <button type="button" onClick={() => router.back()} className="btn-quiet">Cancel</button>
-          <button type="submit" form="campaign-form" disabled={saving} className="btn-accent">
-            {saving ? "Saving…" : mode === "new" ? "Create campaign" : "Save changes"}
-          </button>
-        </div>
-      </div>
+      <Link
+        href={mode === "edit" ? `/app/campaigns/${initial?.id}` : "/app"}
+        className="inline-flex items-center gap-1.5 text-[12px] text-ink-500 hover:text-ink transition-colors cursor-pointer mb-4"
+      >
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d="M7 2L3 6l4 4" />
+        </svg>
+        {mode === "edit" ? "Back to campaign" : "Back to campaigns"}
+      </Link>
+
+      <PageHeader
+        eyebrow={mode === "new" ? "Workspace · New" : "Workspace · Edit"}
+        title={mode === "new" ? "New campaign" : "Edit campaign"}
+        subtitle={mode === "new"
+          ? "Pick a sender, drop in a list, write the message. We'll handle pacing, threading, and reply triage."
+          : "Changes apply to pending sends only. Already-sent rows keep their original render."}
+        actions={
+          <>
+            <button type="button" onClick={() => router.back()} className="btn-quiet">Cancel</button>
+            <button type="submit" form="campaign-form" disabled={saving} className="btn-accent">
+              {saving ? "Saving…" : mode === "new" ? "Create campaign" : "Save changes"}
+            </button>
+          </>
+        }
+      />
 
       <form id="campaign-form" onSubmit={onSubmit} className="grid grid-cols-1 lg:grid-cols-[1fr,300px] gap-10">
         <div className="space-y-10">

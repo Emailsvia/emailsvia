@@ -2,8 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
-import ThemeToggle from "@/components/ThemeToggle";
+import { useEffect, useRef, useState } from "react";
 import Logo from "@/components/Logo";
 import CommandPalette from "@/components/CommandPalette";
 import AppAlerts from "@/components/AppAlerts";
@@ -133,21 +132,18 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </div>
 
-        {/* Bottom: plan card + footer actions */}
+        {/* Bottom: plan card + sign-out */}
         <div className="border-t border-ink-200 p-2 space-y-2">
           <PlanCard />
-          <div className="grid grid-cols-2 gap-1">
-            <ThemeToggle variant="compact" />
-            <button
-              type="button"
-              onClick={logout}
-              className="flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-[12.5px] text-ink-600 hover:text-ink hover:bg-hover transition-colors cursor-pointer"
-              title="Sign out"
-            >
-              <IconLogout className="w-3.5 h-3.5" />
-              <span>Sign out</span>
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={logout}
+            className="flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-[12.5px] text-ink-600 hover:text-ink hover:bg-hover transition-colors cursor-pointer"
+            title="Sign out"
+          >
+            <IconLogout className="w-3.5 h-3.5" />
+            <span>Sign out</span>
+          </button>
         </div>
       </aside>
 
@@ -243,41 +239,182 @@ function CommandPaletteTriggerCompact() {
   );
 }
 
+type Alert = {
+  id: string;
+  severity: "error" | "warn" | "info";
+  title: string;
+  body: string;
+  href: string;
+  cta: string;
+};
+
+const ALERT_TONE: Record<Alert["severity"], { dot: string; iconBg: string; iconColor: string }> = {
+  error: {
+    dot: "rgb(255 99 99)",
+    iconBg: "rgb(255 99 99 / 0.15)",
+    iconColor: "rgb(255 140 140)",
+  },
+  warn: {
+    dot: "rgb(255 159 67)",
+    iconBg: "rgb(255 159 67 / 0.15)",
+    iconColor: "rgb(255 180 110)",
+  },
+  info: {
+    dot: "rgb(161 161 170)",
+    iconBg: "rgb(255 255 255 / 0.06)",
+    iconColor: "rgb(244 244 245)",
+  },
+};
+
 function AlertsBell() {
-  // Watches the same /api/app/alerts feed as <AppAlerts/>; shows a badge dot
-  // when something is pending. Click does nothing yet (alerts banner stays
-  // primary surface); we'll wire a dropdown in Part 7.
-  const [count, setCount] = useState(0);
+  const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     const load = () => {
       fetch("/api/app/alerts", { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : { alerts: [] }))
-        .then((d) => { if (!cancelled) setCount((d.alerts ?? []).length); })
+        .then((d) => { if (!cancelled) setAlerts((d.alerts ?? []) as Alert[]); })
         .catch(() => {});
     };
     load();
     const id = setInterval(load, 60_000);
     return () => { cancelled = true; clearInterval(id); };
   }, []);
+
+  // Click-outside + ESC dismiss
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const count = alerts.length;
+  const hasError = alerts.some((a) => a.severity === "error");
+
   return (
-    <button
-      type="button"
-      className="relative grid place-items-center w-9 h-9 rounded-lg text-ink-600 hover:text-ink hover:bg-hover transition-colors cursor-pointer"
-      aria-label={count > 0 ? `${count} alerts` : "No alerts"}
-      title={count > 0 ? `${count} alert${count === 1 ? "" : "s"}` : "All clear"}
-    >
-      <IconBell className="w-4 h-4" />
-      {count > 0 && (
-        <span
-          className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full"
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="relative grid place-items-center w-9 h-9 rounded-lg text-ink-600 hover:text-ink hover:bg-hover transition-colors cursor-pointer"
+        aria-label={count > 0 ? `${count} alerts` : "No alerts"}
+        aria-expanded={open}
+        title={count > 0 ? `${count} alert${count === 1 ? "" : "s"}` : "All clear"}
+      >
+        <IconBell className="w-4 h-4" />
+        {count > 0 && (
+          <span
+            className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full"
+            style={{
+              background: hasError ? "rgb(255 99 99)" : "rgb(255 159 67)",
+              boxShadow: `0 0 8px ${hasError ? "rgb(255 99 99 / 0.6)" : "rgb(255 159 67 / 0.6)"}`,
+            }}
+          />
+        )}
+      </button>
+
+      {open && (
+        <div
+          role="menu"
+          className="absolute right-0 mt-2 w-[340px] rounded-xl bg-paper border border-ink-200 overflow-hidden z-50"
           style={{
-            background: "rgb(var(--m-coral))",
-            boxShadow: "0 0 8px rgb(var(--m-coral) / 0.6)",
+            boxShadow: "0 30px 80px -20px rgb(0 0 0 / 0.5), 0 0 0 1px rgb(255 255 255 / 0.04)",
           }}
-        />
+        >
+          <div className="px-4 py-3 border-b border-ink-100 flex items-center justify-between">
+            <span className="font-mono text-[10.5px] uppercase tracking-wider text-ink-500">
+              Notifications
+            </span>
+            {count > 0 && (
+              <span className="font-mono text-[11px] text-ink-700">
+                {count} pending
+              </span>
+            )}
+          </div>
+
+          {count === 0 ? (
+            <div className="px-4 py-10 text-center">
+              <div
+                className="mx-auto grid place-items-center w-9 h-9 rounded-full mb-3"
+                style={{
+                  background: "rgb(16 185 129 / 0.10)",
+                  color: "rgb(110 231 183)",
+                }}
+                aria-hidden
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 12l5 5L20 7" />
+                </svg>
+              </div>
+              <div className="text-[13px] text-ink font-medium">All caught up.</div>
+              <div className="text-[11.5px] text-ink-500 mt-1">No alerts on your account right now.</div>
+            </div>
+          ) : (
+            <div className="max-h-[60vh] overflow-y-auto">
+              {alerts.map((a) => {
+                const tone = ALERT_TONE[a.severity];
+                const isExternal = a.href.startsWith("mailto:") || a.href.startsWith("http");
+                const onClick = () => setOpen(false);
+                const inner = (
+                  <>
+                    <span
+                      className="mt-0.5 grid place-items-center w-6 h-6 rounded-md shrink-0"
+                      style={{ background: tone.iconBg, color: tone.iconColor }}
+                      aria-hidden
+                    >
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        {a.severity === "error" || a.severity === "warn" ? (
+                          <path d="M12 8v5M12 17h.01" />
+                        ) : (
+                          <path d="M12 8v8M12 8h.01" />
+                        )}
+                      </svg>
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13px] font-medium text-ink truncate">{a.title}</div>
+                      <div className="text-[12px] text-ink-600 leading-snug mt-0.5 line-clamp-2">{a.body}</div>
+                      <div className="font-mono text-[11px] mt-1.5" style={{ color: tone.iconColor }}>
+                        {a.cta} →
+                      </div>
+                    </div>
+                  </>
+                );
+                return isExternal ? (
+                  <a
+                    key={a.id}
+                    href={a.href}
+                    onClick={onClick}
+                    className="flex items-start gap-2.5 px-4 py-3 border-b border-ink-100 last:border-b-0 hover:bg-hover transition-colors cursor-pointer"
+                  >
+                    {inner}
+                  </a>
+                ) : (
+                  <Link
+                    key={a.id}
+                    href={a.href}
+                    onClick={onClick}
+                    className="flex items-start gap-2.5 px-4 py-3 border-b border-ink-100 last:border-b-0 hover:bg-hover transition-colors cursor-pointer"
+                  >
+                    {inner}
+                  </Link>
+                );
+              })}
+            </div>
+          )}
+        </div>
       )}
-    </button>
+    </div>
   );
 }
 

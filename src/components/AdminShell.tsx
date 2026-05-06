@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import ThemeToggle from "@/components/ThemeToggle";
 import Logo from "@/components/Logo";
 
 // Operator-only chrome. Mirrors AppShell's structure so the navigation
@@ -133,9 +132,8 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
           ))}
         </div>
 
-        {/* Footer: theme + sign out */}
-        <div className="border-t border-ink-200 p-2 space-y-1">
-          <ThemeToggle variant="compact" />
+        {/* Footer: sign out */}
+        <div className="border-t border-ink-200 p-2">
           <button
             type="button"
             onClick={logout}

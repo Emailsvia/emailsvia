@@ -31,19 +31,23 @@ export const metadata: Metadata = {
   description: "Send personalized campaigns on a schedule.",
 };
 
-// Dark-only product. The theme attribute is set inline so the first paint
-// is dark — no light-mode flash on slow connections. We deliberately don't
-// expose a toggle: the design system, marketing canvas, and component
-// tokens are all built dark-native.
-const themeScript = `
-  (function () {
-    try { document.documentElement.dataset.theme = 'dark'; } catch (e) {}
-  })();
-`;
+// Dark-only product. data-theme is rendered server-side so the very first
+// paint is correct — no client JS needed, no localStorage check, no flash.
+// We deliberately don't expose a toggle: the design system, marketing canvas,
+// and component tokens are all built dark-native. A small inline script also
+// re-asserts dark on hydration to defend against legacy localStorage values
+// from older builds that toggled themes.
+const themeScript = `try{document.documentElement.dataset.theme='dark';localStorage.removeItem('theme');}catch(e){}`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${sans.variable} ${display.variable} ${mono.variable}`} suppressHydrationWarning>
+    <html
+      lang="en"
+      data-theme="dark"
+      className={`${sans.variable} ${display.variable} ${mono.variable}`}
+      style={{ colorScheme: "dark" }}
+      suppressHydrationWarning
+    >
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>

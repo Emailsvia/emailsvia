@@ -27,8 +27,44 @@ const mono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "EmailsVia",
-  description: "Send personalized campaigns on a schedule.",
+  metadataBase: new URL("https://emailsvia.com"),
+  title: {
+    default: "EmailsVia — Cold email that doesn't feel cold",
+    template: "%s · EmailsVia",
+  },
+  description:
+    "Mail merge from your own Gmail — with warmup, threaded follow-ups, and AI that reads your replies so you don't have to. Built for founders, recruiters, and operators.",
+  applicationName: "EmailsVia",
+  keywords: [
+    "cold email",
+    "mail merge",
+    "Gmail",
+    "outbound",
+    "warmup",
+    "AI reply triage",
+    "follow-up sequence",
+    "inbox rotation",
+  ],
+  authors: [{ name: "EmailsVia" }],
+  openGraph: {
+    type: "website",
+    url: "https://emailsvia.com",
+    siteName: "EmailsVia",
+    title: "EmailsVia — Cold email that doesn't feel cold",
+    description:
+      "Mail merge from your own Gmail — with warmup, threaded follow-ups, and AI that reads your replies so you don't have to.",
+    locale: "en_US",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "EmailsVia — Cold email that doesn't feel cold",
+    description:
+      "Mail merge from your own Gmail — with warmup, threaded follow-ups, and AI reply triage.",
+  },
+  robots: {
+    index: true,
+    follow: true,
+  },
 };
 
 // Dark-only product. data-theme is rendered server-side so the very first

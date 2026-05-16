@@ -53,10 +53,12 @@ export default function CampaignForm({
   mode,
   initial,
   initialSteps,
+  trackingDefault = false,
 }: {
   mode: "new" | "edit";
   initial?: CampaignInitial;
   initialSteps?: FollowUpStep[];
+  trackingDefault?: boolean;
 }) {
   const router = useRouter();
 
@@ -94,7 +96,7 @@ export default function CampaignForm({
   const [followUpsEnabled, setFollowUpsEnabled] = useState(initial?.follow_ups_enabled ?? false);
   const [retryEnabled, setRetryEnabled] = useState(initial?.retry_enabled ?? false);
   const [maxRetries, setMaxRetries] = useState(initial?.max_retries ?? 2);
-  const [trackingEnabled, setTrackingEnabled] = useState(initial?.tracking_enabled ?? true);
+  const [trackingEnabled, setTrackingEnabled] = useState(initial?.tracking_enabled ?? trackingDefault);
   const [unsubEnabled, setUnsubEnabled] = useState(initial?.unsubscribe_enabled ?? false);
   const [strictMerge, setStrictMerge] = useState(initial?.strict_merge ?? true);
   const [startAt, setStartAt] = useState<string>(() => {

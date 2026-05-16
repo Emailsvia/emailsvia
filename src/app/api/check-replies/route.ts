@@ -10,6 +10,7 @@ import { classifyReply } from "@/lib/triage";
 import { mapWithLimit } from "@/lib/email-validator";
 import { markSenderRevoked } from "@/lib/sender-revoke";
 import { dispatch as fireWebhook } from "@/lib/webhooks";
+import { loadReplyPollUserIds } from "@/lib/user-settings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -54,12 +55,21 @@ export async function GET(req: NextRequest) {
 }
 
 async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<NextResponse> {
-  const { data: senders } = await db
+  const { data: allSenders } = await db
     .from("senders")
     .select(
       "id, email, app_password, user_id, auth_method, oauth_refresh_token, oauth_access_token, oauth_expires_at, oauth_status"
     );
-  if (!senders || senders.length === 0) return NextResponse.json({ status: "no_senders" });
+  if (!allSenders || allSenders.length === 0) return NextResponse.json({ status: "no_senders" });
+
+  // Reply polling is opt-in per user (user_settings.poll_replies). Anyone
+  // who hasn't flipped it on is skipped here so we don't hit Gmail or
+  // burn AI triage budget on inboxes nobody asked us to watch.
+  const enabledUsers = await loadReplyPollUserIds(
+    allSenders.map((s) => s.user_id).filter((id): id is string => !!id)
+  );
+  const senders = allSenders.filter((s) => s.user_id && enabledUsers.has(s.user_id));
+  if (senders.length === 0) return NextResponse.json({ status: "no_opted_in_users" });
 
   const since = new Date(Date.now() - 7 * 86400 * 1000);
   const results: Array<{

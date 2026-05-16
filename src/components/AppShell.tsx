@@ -24,6 +24,7 @@ const NAV: NavSection[] = [
   {
     label: "Settings",
     items: [
+      { href: "/app/settings", label: "Settings",  icon: IconSettings },
       { href: "/app/billing",  label: "Billing",   icon: IconBilling  },
       { href: "/app/keys",     label: "API keys",  icon: IconKey      },
       { href: "/app/webhooks", label: "Webhooks",  icon: IconWebhook  },
@@ -571,6 +572,14 @@ function IconWebhook({ className = "" }: { className?: string }) {
       <circle cx="18" cy="17" r="3" />
       <circle cx="12" cy="6" r="3" />
       <path d="M12 9l-4 6M12 9l4 6M9 17h6" />
+    </svg>
+  );
+}
+function IconSettings({ className = "" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
     </svg>
   );
 }

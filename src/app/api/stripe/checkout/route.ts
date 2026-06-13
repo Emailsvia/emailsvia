@@ -43,28 +43,40 @@ export async function POST(req: NextRequest) {
   const successUrl = `${appUrl()}/app/billing?status=success`;
   const cancelUrl = `${appUrl()}/app/billing?status=cancelled`;
 
-  const session = await stripe().checkout.sessions.create({
-    mode: "subscription",
-    line_items: [{ price: priceId, quantity: 1 }],
-    success_url: successUrl,
-    cancel_url: cancelUrl,
-    customer: sub?.stripe_customer_id ?? undefined,
-    customer_email: sub?.stripe_customer_id ? undefined : (u.email ?? undefined),
-    // Stripe Tax handles VAT/GST/sales-tax automatically (Phase 1.4 plan
-    // calls this out explicitly). Enable in Dashboard -> Settings -> Tax.
-    automatic_tax: { enabled: true },
-    // Stamp our own user id onto the session so the webhook can resolve
-    // back to a Supabase user even if the customer id wasn't pre-linked.
-    client_reference_id: u.id,
-    metadata: { user_id: u.id, plan_id: planId },
-    subscription_data: {
+  try {
+    const session = await stripe().checkout.sessions.create({
+      mode: "subscription",
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      customer: sub?.stripe_customer_id ?? undefined,
+      customer_email: sub?.stripe_customer_id ? undefined : (u.email ?? undefined),
+      // Stripe Tax handles VAT/GST/sales-tax automatically (Phase 1.4 plan
+      // calls this out explicitly). Enable in Dashboard -> Settings -> Tax.
+      automatic_tax: { enabled: true },
+      // Stamp our own user id onto the session so the webhook can resolve
+      // back to a Supabase user even if the customer id wasn't pre-linked.
+      client_reference_id: u.id,
       metadata: { user_id: u.id, plan_id: planId },
-    },
-    allow_promotion_codes: true,
-  });
+      subscription_data: {
+        metadata: { user_id: u.id, plan_id: planId },
+      },
+      // Show the promo-code box. A 100%-off code (e.g. "FREE") drops the
+      // total to $0, so don't force a card in that case.
+      allow_promotion_codes: true,
+      payment_method_collection: "if_required",
+    });
 
-  if (!session.url) {
-    return NextResponse.json({ error: "stripe_no_session_url" }, { status: 500 });
+    if (!session.url) {
+      return NextResponse.json({ error: "stripe_no_session_url" }, { status: 500 });
+    }
+    return NextResponse.json({ url: session.url });
+  } catch (e) {
+    // Surface the real Stripe error (e.g. tax origin not configured, bad
+    // price id) instead of letting the route 500 with an opaque page — the
+    // billing UI shows whatever message we return here.
+    const msg = e instanceof Error ? e.message : "stripe_checkout_failed";
+    console.error("[stripe/checkout] session create failed:", msg);
+    return NextResponse.json({ error: msg }, { status: 502 });
   }
-  return NextResponse.json({ url: session.url });
 }

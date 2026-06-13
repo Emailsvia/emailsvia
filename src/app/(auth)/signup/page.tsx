@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import AuthShell from "@/components/auth/AuthShell";
@@ -15,13 +15,28 @@ import {
   GoogleButton,
 } from "@/components/auth/AuthForm";
 
+const PAID_PLANS = new Set(["starter", "growth", "scale"]);
+
 export default function SignupPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [needsConfirm, setNeedsConfirm] = useState(false);
+  const [plan, setPlan] = useState<string | null>(null);
   const router = useRouter();
+
+  // The pricing CTAs link here as /signup?plan=starter|growth|scale. Capture
+  // it client-side (avoids the useSearchParams Suspense requirement) and carry
+  // it through to checkout once the account exists.
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search).get("plan");
+    if (p && PAID_PLANS.has(p)) setPlan(p);
+  }, []);
+
+  // Where to send the user once they have a session. Paid plans go to billing
+  // with checkout pre-armed; everyone else lands in the app.
+  const nextPath = plan ? `/app/billing?checkout=${plan}` : "/app";
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -30,7 +45,7 @@ export default function SignupPage() {
     const res = await fetch("/api/auth/signup", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, plan }),
     });
     setLoading(false);
     const body = await res.json().catch(() => ({}));
@@ -46,12 +61,12 @@ export default function SignupPage() {
       setNeedsConfirm(true);
       return;
     }
-    router.push("/app");
+    router.push(nextPath);
     router.refresh();
   }
 
   function onGoogle() {
-    window.location.href = "/api/auth/google?next=/app";
+    window.location.href = `/api/auth/google?next=${encodeURIComponent(nextPath)}`;
   }
 
   if (needsConfirm) {

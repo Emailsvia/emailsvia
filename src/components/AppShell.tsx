@@ -489,11 +489,38 @@ function UserChip() {
 }
 
 /* -------------------------------------------------------------------------
-   Plan card — shown at the bottom of the sidebar. Stays a static "Free"
-   label until Part 7 wires real usage; the visual sells the upgrade path.
+   Plan card — shown at the bottom of the sidebar. Reflects the user's live
+   plan + today's usage (pulled from /api/billing); the visual sells the
+   upgrade path.
    ------------------------------------------------------------------------- */
 
+type BillingSummary = {
+  plan: { name: string; daily_cap: number };
+  sent_today: number;
+};
+
 function PlanCard() {
+  const [billing, setBilling] = useState<BillingSummary | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/billing", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!cancelled && d?.plan) {
+          setBilling({ plan: d.plan, sent_today: d.sent_today ?? 0 });
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  const name = billing?.plan.name ?? "Free";
+  const cap = billing?.plan.daily_cap ?? 50;
+  const sent = billing?.sent_today ?? 0;
+  const pct = Math.min(100, Math.max(2, (sent / Math.max(1, cap)) * 100));
+  const nearCap = pct >= 90;
+
   return (
     <Link
       href="/app/billing"
@@ -508,15 +535,19 @@ function PlanCard() {
         </span>
       </div>
       <div className="flex items-baseline justify-between">
-        <span className="text-[13px] font-semibold text-ink">Free</span>
-        <span className="font-mono text-[11px] text-ink-500">50/day</span>
+        <span className="text-[13px] font-semibold text-ink">{name}</span>
+        <span className="font-mono text-[11px] text-ink-500 tabular-nums">
+          {sent.toLocaleString()}/{cap.toLocaleString()}
+        </span>
       </div>
       <div className="mt-2 h-1 rounded-full bg-ink-100 overflow-hidden">
         <div
           className="h-full rounded-full transition-all"
           style={{
-            width: "12%",
-            background: "linear-gradient(90deg, rgb(var(--m-coral)), rgb(var(--m-amber)))",
+            width: `${pct}%`,
+            background: nearCap
+              ? "rgb(239 68 68)"
+              : "linear-gradient(90deg, rgb(var(--m-coral)), rgb(var(--m-amber)))",
           }}
         />
       </div>

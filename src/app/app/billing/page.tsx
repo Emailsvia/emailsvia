@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import AppShell from "@/components/AppShell";
 import PageHeader from "@/components/app/PageHeader";
 
@@ -100,6 +100,8 @@ export default function BillingPage() {
   const [state, setState] = useState<BillingState | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [flash, setFlash] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
+  const [pendingCheckout, setPendingCheckout] = useState<PlanId | null>(null);
+  const checkoutFired = useRef(false);
 
   async function load() {
     const r = await fetch("/api/billing", { cache: "no-store" });
@@ -111,6 +113,7 @@ export default function BillingPage() {
     load();
     const params = new URLSearchParams(window.location.search);
     const status = params.get("status");
+    const checkout = params.get("checkout");
     if (status === "success") {
       setFlash({ kind: "ok", msg: "Payment confirmed. Your plan will update in a few seconds." });
       window.history.replaceState({}, "", "/app/billing");
@@ -118,7 +121,28 @@ export default function BillingPage() {
       setFlash({ kind: "err", msg: "Checkout cancelled — no changes made." });
       window.history.replaceState({}, "", "/app/billing");
     }
+    // Arrived from a paid signup (?checkout=growth) — pre-arm checkout so the
+    // user goes straight to Stripe once their plan state has loaded.
+    if (checkout && (checkout === "starter" || checkout === "growth" || checkout === "scale")) {
+      setPendingCheckout(checkout);
+      window.history.replaceState({}, "", "/app/billing");
+    }
   }, []);
+
+  // Fire the pre-armed checkout once, after billing state is known. Skip if the
+  // user already holds that tier or higher (e.g. they refreshed the URL).
+  useEffect(() => {
+    if (!pendingCheckout || !state || checkoutFired.current) return;
+    if (RANK[state.plan.id] >= RANK[pendingCheckout]) {
+      setPendingCheckout(null);
+      return;
+    }
+    checkoutFired.current = true;
+    startCheckout(pendingCheckout);
+    setPendingCheckout(null);
+    // startCheckout is stable for this purpose; intentionally not in deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingCheckout, state]);
 
   async function startCheckout(plan: PlanId) {
     setBusy(plan);
@@ -147,12 +171,17 @@ export default function BillingPage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ plan }),
       });
-      const data = await r.json();
+      const data = await r.json().catch(() => ({}));
       if (!r.ok || !data.url) {
         setFlash({ kind: "err", msg: data.error ?? `Couldn't start checkout (${r.status}).` });
         return;
       }
       window.location.href = data.url;
+    } catch (e) {
+      setFlash({
+        kind: "err",
+        msg: e instanceof Error ? `Checkout failed: ${e.message}` : "Checkout failed. Try again?",
+      });
     } finally {
       setBusy(null);
     }

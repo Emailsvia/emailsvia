@@ -21,9 +21,24 @@ export async function GET(req: NextRequest) {
   }
 
   const dest = req.nextUrl.clone();
-  dest.pathname = safeNext(next);
-  dest.search = "";
+  const { path, query } = splitNext(next);
+  dest.pathname = path;
+  dest.search = query;
   return NextResponse.redirect(dest);
+}
+
+// Split `next` into a validated path + its query string. The path is run
+// through the open-redirect guard; the query is only preserved when the path
+// is trusted (otherwise we drop both and fall back to /app). This lets us
+// carry things like `?checkout=growth` through email-confirmation / OAuth
+// round-trips without ever honoring an attacker-supplied absolute URL.
+function splitNext(value: string): { path: string; query: string } {
+  if (typeof value !== "string") return { path: "/app", query: "" };
+  const qIdx = value.indexOf("?");
+  const rawPath = qIdx === -1 ? value : value.slice(0, qIdx);
+  const rawQuery = qIdx === -1 ? "" : value.slice(qIdx);
+  const path = safeNext(rawPath);
+  return { path, query: path === rawPath ? rawQuery : "" };
 }
 
 // Allow only same-origin paths starting with a single slash. Rejects

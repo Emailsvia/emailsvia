@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseUser } from "@/lib/supabase-server";
+import { requestOrigin } from "@/lib/tokens";
 
 export const runtime = "nodejs";
 
@@ -13,7 +14,7 @@ export async function POST(req: NextRequest) {
   }
   const sb = await supabaseUser();
   await sb.auth.resetPasswordForEmail(email, {
-    redirectTo: `${process.env.APP_URL ?? ""}/auth/callback?next=/app`,
+    redirectTo: `${requestOrigin(req)}/auth/callback?next=/app`,
   });
   return NextResponse.json({ ok: true });
 }

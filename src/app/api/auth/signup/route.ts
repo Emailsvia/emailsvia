@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseUser } from "@/lib/supabase-server";
+import { requestOrigin } from "@/lib/tokens";
 
 export const runtime = "nodejs";
 
@@ -27,7 +28,7 @@ export async function POST(req: NextRequest) {
     email,
     password,
     options: {
-      emailRedirectTo: `${process.env.APP_URL ?? ""}/auth/callback?next=${encodeURIComponent(next)}`,
+      emailRedirectTo: `${requestOrigin(req)}/auth/callback?next=${encodeURIComponent(next)}`,
     },
   });
   if (error) {

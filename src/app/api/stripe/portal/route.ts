@@ -1,15 +1,15 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getUser } from "@/lib/auth-server";
 import { supabaseAdmin } from "@/lib/supabase";
 import { stripe } from "@/lib/stripe";
-import { appUrl } from "@/lib/tokens";
+import { requestOrigin } from "@/lib/tokens";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // Stripe Customer Portal — lets the user update card, see invoices, cancel.
 // Only callable once they've actually checked out (we need a customer id).
-export async function POST() {
+export async function POST(req: NextRequest) {
   const u = await getUser();
   if (!u) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
@@ -26,7 +26,7 @@ export async function POST() {
 
   const session = await stripe().billingPortal.sessions.create({
     customer: sub.stripe_customer_id,
-    return_url: `${appUrl()}/app/billing`,
+    return_url: `${requestOrigin(req)}/app/billing`,
   });
   return NextResponse.json({ url: session.url });
 }

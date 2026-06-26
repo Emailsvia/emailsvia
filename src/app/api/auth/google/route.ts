@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseUser } from "@/lib/supabase-server";
+import { requestOrigin } from "@/lib/tokens";
 
 export const runtime = "nodejs";
 
@@ -12,7 +13,7 @@ export async function GET(req: NextRequest) {
   const { data, error } = await sb.auth.signInWithOAuth({
     provider: "google",
     options: {
-      redirectTo: `${process.env.APP_URL ?? req.nextUrl.origin}/auth/callback?next=${encodeURIComponent(next)}`,
+      redirectTo: `${requestOrigin(req)}/auth/callback?next=${encodeURIComponent(next)}`,
     },
   });
   if (error || !data.url) {

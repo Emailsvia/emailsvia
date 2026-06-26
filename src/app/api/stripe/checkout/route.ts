@@ -3,7 +3,7 @@ import { z } from "zod";
 import { getUser } from "@/lib/auth-server";
 import { supabaseAdmin } from "@/lib/supabase";
 import { stripe, stripePriceFor } from "@/lib/stripe";
-import { appUrl } from "@/lib/tokens";
+import { requestOrigin } from "@/lib/tokens";
 import type { PlanId } from "@/lib/billing";
 
 export const runtime = "nodejs";
@@ -40,8 +40,11 @@ export async function POST(req: NextRequest) {
     .eq("user_id", u.id)
     .maybeSingle();
 
-  const successUrl = `${appUrl()}/app/billing?status=success`;
-  const cancelUrl = `${appUrl()}/app/billing?status=cancelled`;
+  // Derive the return origin from the live request, not APP_URL — a stale
+  // APP_URL must never strand a paying user on localhost after checkout.
+  const origin = requestOrigin(req);
+  const successUrl = `${origin}/app/billing?status=success`;
+  const cancelUrl = `${origin}/app/billing?status=cancelled`;
 
   try {
     const session = await stripe().checkout.sessions.create({

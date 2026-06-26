@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import type { NextRequest } from "next/server";
 
 function secret() {
   const s = process.env.ENCRYPTION_SECRET ?? process.env.SESSION_SECRET;
@@ -49,6 +50,35 @@ export function appUrl() {
     return "http://localhost:3000";
   }
   return url.replace(/\/$/, "");
+}
+
+// Resolve the public origin to send a browser back to (Stripe checkout/portal
+// return, Supabase OAuth + email links). Trusts the live request over the
+// APP_URL env on purpose: a misconfigured APP_URL (e.g. left as
+// http://localhost:3000 in a deployed environment) would otherwise strand
+// paying users on a dead localhost page after Stripe checkout. Order:
+//   1. Browser-set Origin header (exact origin the user is on)
+//   2. Forwarded host (Vercel sets x-forwarded-host/proto; validated by the
+//      platform against the deployment's domains, so safe to trust here)
+//   3. Configured APP_URL (or the localhost dev default)
+//   4. The request's own parsed origin
+export function requestOrigin(req: NextRequest): string {
+  const origin = req.headers.get("origin");
+  if (origin && /^https?:\/\/[^/]+$/.test(origin)) {
+    return origin.replace(/\/$/, "");
+  }
+
+  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+  if (host) {
+    const proto = req.headers.get("x-forwarded-proto") ?? "https";
+    return `${proto}://${host}`.replace(/\/$/, "");
+  }
+
+  try {
+    return appUrl();
+  } catch {
+    return req.nextUrl.origin;
+  }
 }
 
 // Constant-time equality for the cron bearer header.

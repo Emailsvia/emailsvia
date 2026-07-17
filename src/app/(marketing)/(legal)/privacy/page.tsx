@@ -111,6 +111,7 @@ export default function PrivacyPage() {
             <li><b>Vercel</b> &mdash; hosting and edge runtime.</li>
             <li><b>Stripe</b> &mdash; payment processing and tax calculation.</li>
             <li><b>Google</b> &mdash; for the Gmail API integration you authorize per sender.</li>
+            <li><b>Google Analytics</b> &mdash; privacy-conscious, aggregate usage analytics on our website pages to understand traffic and improve the product.</li>
           </ul>
         </Section>
 

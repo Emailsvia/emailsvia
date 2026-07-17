@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { GoogleAnalytics } from "@next/third-parties/google";
 import "./globals.css";
 
 // Geist is the primary product font — used both as default sans and as the
@@ -75,6 +76,12 @@ export const metadata: Metadata = {
 // from older builds that toggled themes.
 const themeScript = `try{document.documentElement.dataset.theme='dark';localStorage.removeItem('theme');}catch(e){}`;
 
+// GA4 measurement id, inlined at build time. When unset (e.g. local dev, or
+// before it's configured in Vercel), no gtag.js loads at all — a privacy-safe
+// no-op default. The @next/third-parties <GoogleAnalytics> component handles
+// script injection and App Router SPA route-change page_view events for us.
+const gaId = process.env.NEXT_PUBLIC_GA_ID;
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html
@@ -88,6 +95,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
       <body>{children}</body>
+      {gaId ? <GoogleAnalytics gaId={gaId} /> : null}
     </html>
   );
 }

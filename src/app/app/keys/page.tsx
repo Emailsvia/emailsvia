@@ -201,6 +201,31 @@ export default function KeysPage() {
           <p className="text-[13px] text-ink-600 mb-3 max-w-2xl">
             Pass the token as a Bearer header on every request to the public API.
           </p>
+          <div className="rounded-lg border border-ink-200 overflow-hidden mb-4 max-w-3xl">
+            <table className="w-full text-[12.5px]">
+              <tbody>
+                {[
+                  ["GET", "/api/v1/me", "Plan and today's usage"],
+                  ["GET", "/api/v1/senders", "Connected inboxes"],
+                  ["GET", "/api/v1/campaigns", "Campaigns with counts (?status=running)"],
+                  ["POST", "/api/v1/campaigns", "Create a draft campaign, optionally with follow_ups"],
+                  ["GET", "/api/v1/campaigns/:id", "Campaign, follow-ups and stats"],
+                  ["PATCH", "/api/v1/campaigns/:id", "{\"status\":\"running\"|\"paused\"}, name, daily_cap"],
+                  ["GET", "/api/v1/campaigns/:id/recipients", "Recipients (?status=&limit=&offset=)"],
+                  ["POST", "/api/v1/campaigns/:id/recipients", "{\"rows\":[{email,name,company,…}]} (extra fields become merge tags)"],
+                  ["GET", "/api/v1/replies", "Replies (?since=&intent=&campaign_id=&include_auto=1)"],
+                  ["GET/POST", "/api/v1/suppressions", "Do-not-contact list ({\"emails\":[…],\"domains\":[…]})"],
+                  ["POST", "/api/v1/campaigns/from-sheet", "Create a campaign and its recipients in one call"],
+                ].map(([m, path, desc]) => (
+                  <tr key={m + path} className="border-t border-ink-100 first:border-t-0">
+                    <td className="px-3 py-1.5 font-mono text-ink-500 whitespace-nowrap">{m}</td>
+                    <td className="px-3 py-1.5 font-mono text-ink whitespace-nowrap">{path}</td>
+                    <td className="px-3 py-1.5 text-ink-600">{desc}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           <CodeBlock language="bash" copyable>
 {`curl -X POST ${origin}/api/v1/campaigns/from-sheet \\
   -H "Authorization: Bearer eav_live_..." \\

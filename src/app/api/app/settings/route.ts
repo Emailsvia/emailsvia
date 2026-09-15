@@ -24,7 +24,16 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "invalid_json" }, { status: 400 });
   }
 
-  const patch: Record<string, boolean> = {};
+  const patch: Record<string, boolean | string | null> = {};
+  const b = body as { notify_interested?: unknown; meeting_link?: unknown };
+  if (typeof b?.notify_interested === "boolean") patch.notify_interested = b.notify_interested;
+  if (b?.meeting_link === null || typeof b?.meeting_link === "string") {
+    const link = typeof b.meeting_link === "string" ? b.meeting_link.trim() : "";
+    if (link && !/^https:\/\/[^\s]{4,500}$/i.test(link)) {
+      return NextResponse.json({ error: "Meeting link must be an https:// URL." }, { status: 400 });
+    }
+    patch.meeting_link = link || null;
+  }
   if (typeof (body as { tracking_enabled_default?: unknown })?.tracking_enabled_default === "boolean") {
     patch.tracking_enabled_default = (body as { tracking_enabled_default: boolean }).tracking_enabled_default;
   }

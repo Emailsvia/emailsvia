@@ -20,8 +20,26 @@ const ALL_EVENTS = [
   { id: "reply.received",         label: "Reply received" },
   { id: "reply.classified",       label: "Reply classified (AI intent)" },
   { id: "recipient.unsubscribed", label: "Recipient unsubscribed" },
+  { id: "email.sent",             label: "Email sent (first email or follow-up)" },
+  { id: "email.bounced",          label: "Email bounced" },
+  { id: "sequence.stopped",       label: "Sequence stopped (replied, bounced, colleague replied…)" },
+  { id: "campaign.paused",        label: "Campaign auto-paused" },
   { id: "campaign.finished",      label: "Campaign finished" },
 ];
+
+// High-volume events are opt-in so a CRM hook doesn't get one call per send.
+const DEFAULT_EVENTS = ["reply.received", "reply.classified", "recipient.unsubscribed", "sequence.stopped", "campaign.paused", "campaign.finished"];
+
+type Delivery = {
+  id: string;
+  event_type: string;
+  status: "pending" | "succeeded" | "failed" | "exhausted";
+  attempts: number;
+  http_status: number | null;
+  response_excerpt: string | null;
+  next_attempt_at: string | null;
+  created_at: string;
+};
 
 export default function WebhooksPage() {
   const [hooks, setHooks] = useState<Webhook[] | null>(null);
@@ -32,9 +50,10 @@ export default function WebhooksPage() {
   const [form, setForm] = useState<{ name: string; url: string; events: string[] }>({
     name: "",
     url: "",
-    events: ALL_EVENTS.map((e) => e.id),
+    events: DEFAULT_EVENTS,
   });
   const [saving, setSaving] = useState(false);
+  const [openLog, setOpenLog] = useState<string | null>(null);
 
   async function load() {
     const r = await fetch("/api/webhooks", { cache: "no-store" });
@@ -275,6 +294,9 @@ export default function WebhooksPage() {
                     </div>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
+                    <button onClick={() => setOpenLog(openLog === h.id ? null : h.id)} className="btn-quiet text-[12.5px]">
+                      {openLog === h.id ? "Hide log" : "Deliveries"}
+                    </button>
                     <button
                       onClick={() => toggle(h.id, !h.active)}
                       className="btn-quiet text-[12.5px]"
@@ -289,6 +311,7 @@ export default function WebhooksPage() {
                     </button>
                   </div>
                 </div>
+                {openLog === h.id && <DeliveryLog webhookId={h.id} />}
               </div>
             ))}
           </div>
@@ -444,4 +467,70 @@ function relative(dt: string): string {
   const days = Math.round(h / 24);
   if (days < 30) return `${days}d ago`;
   return new Date(dt).toLocaleDateString();
+}
+
+function DeliveryLog({ webhookId }: { webhookId: string }) {
+  const [rows, setRows] = useState<Delivery[] | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  async function load() {
+    const r = await fetch(`/api/webhooks/${webhookId}/deliveries`, { cache: "no-store" });
+    const d = await r.json().catch(() => ({}));
+    setRows(d.deliveries ?? []);
+  }
+  useEffect(() => { load(); }, [webhookId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function redeliver(id: string) {
+    setBusy(id);
+    try {
+      await fetch(`/api/webhooks/deliveries/${id}/redeliver`, { method: "POST" });
+      await load();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const tone: Record<Delivery["status"], string> = {
+    succeeded: "rgb(110 231 183)",
+    pending: "rgb(255 180 110)",
+    failed: "rgb(252 165 165)",
+    exhausted: "rgb(252 165 165)",
+  };
+
+  return (
+    <div className="mt-3 rounded-lg border border-ink-200 overflow-hidden">
+      {rows === null ? (
+        <div className="px-3 py-2 text-[12px] text-ink-500">Loading…</div>
+      ) : rows.length === 0 ? (
+        <div className="px-3 py-2 text-[12px] text-ink-500">No deliveries yet.</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-[12px]">
+            <tbody>
+              {rows.map((d) => (
+                <tr key={d.id} className="border-t border-ink-100 first:border-t-0">
+                  <td className="px-3 py-1.5 font-mono whitespace-nowrap">{d.event_type}</td>
+                  <td className="px-3 py-1.5 whitespace-nowrap" style={{ color: tone[d.status] }}>
+                    {d.status === "pending" && d.attempts > 0 ? `retrying (${d.attempts} tries)` : d.status}
+                    {d.http_status ? ` · ${d.http_status}` : ""}
+                  </td>
+                  <td className="px-3 py-1.5 text-ink-500 truncate max-w-[260px]" title={d.response_excerpt ?? ""}>
+                    {d.status !== "succeeded" ? d.response_excerpt : ""}
+                  </td>
+                  <td className="px-3 py-1.5 font-mono text-ink-500 whitespace-nowrap">{relative(d.created_at)}</td>
+                  <td className="px-3 py-1.5 text-right">
+                    {d.status !== "succeeded" && (
+                      <button className="btn-quiet text-[11.5px]" disabled={busy !== null} onClick={() => redeliver(d.id)}>
+                        {busy === d.id ? "Sending…" : "Redeliver"}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
 }

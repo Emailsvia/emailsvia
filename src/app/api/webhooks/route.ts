@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { supabaseUser } from "@/lib/supabase-server";
 import { getUser } from "@/lib/auth-server";
-import { generateWebhookSecret, isWebhookEvent } from "@/lib/webhooks";
+import { generateWebhookSecret, isWebhookEvent, assertPublicUrl } from "@/lib/webhooks";
+import { getPlan, hasFeature } from "@/lib/billing";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,7 +11,7 @@ export const dynamic = "force-dynamic";
 const CreateSchema = z.object({
   name: z.string().min(1).max(100),
   url: z.string().url(),
-  events: z.array(z.string()).min(1).max(8),
+  events: z.array(z.string()).min(1).max(20),
 });
 
 export async function GET() {
@@ -43,8 +44,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "https_required" }, { status: 400 });
   }
 
+  try {
+    await assertPublicUrl(parsed.data.url);
+  } catch (e) {
+    return NextResponse.json({ error: e instanceof Error ? e.message : "invalid_url" }, { status: 400 });
+  }
+
   const secret = generateWebhookSecret();
   const db = await supabaseUser();
+  const plan = await getPlan(db, u.id);
+  if (!hasFeature(plan, "webhooks")) {
+    return NextResponse.json({ error: "Webhooks are available on Growth and Scale." }, { status: 402 });
+  }
   const { data, error } = await db
     .from("webhooks")
     .insert({

@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 const PatchSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   active: z.boolean().optional(),
-  events: z.array(z.string()).min(1).max(8).optional(),
+  events: z.array(z.string()).min(1).max(20).optional(),
 });
 
 export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {

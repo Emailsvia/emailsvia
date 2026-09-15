@@ -3,11 +3,15 @@ import { supabaseAdmin } from "./supabase";
 export type UserSettings = {
   tracking_enabled_default: boolean;
   poll_replies: boolean;
+  meeting_link: string | null;
+  notify_interested: boolean;
 };
 
 const DEFAULTS: UserSettings = {
   tracking_enabled_default: false,
   poll_replies: false,
+  meeting_link: null,
+  notify_interested: true,
 };
 
 // Returns the user's saved settings, or the all-off defaults when no row
@@ -17,13 +21,15 @@ export async function loadUserSettings(userId: string): Promise<UserSettings> {
   const db = supabaseAdmin();
   const { data } = await db
     .from("user_settings")
-    .select("tracking_enabled_default, poll_replies")
+    .select("tracking_enabled_default, poll_replies, meeting_link, notify_interested")
     .eq("user_id", userId)
     .maybeSingle();
   if (!data) return DEFAULTS;
   return {
     tracking_enabled_default: !!data.tracking_enabled_default,
     poll_replies: !!data.poll_replies,
+    meeting_link: data.meeting_link ?? null,
+    notify_interested: data.notify_interested !== false,
   };
 }
 

@@ -139,3 +139,46 @@ export async function sendPaymentFailedNotice(args: {
     tag: "payment-failed",
   });
 }
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+}
+
+// Notification: a prospect replied and AI triage labelled it "interested".
+// Speed-to-reply is the lever on booked meetings, so tell the owner now.
+// The snippet is prospect-written text: escaped, never rendered as HTML.
+export async function sendInterestedReplyNotice(args: {
+  to: string;
+  prospect: string;
+  company: string | null;
+  campaign: string | null;
+  snippet: string | null;
+  appUrl: string;
+}) {
+  const who = args.company ? `${args.prospect} (${args.company})` : args.prospect;
+  const inboxUrl = `${args.appUrl.replace(/\/$/, "")}/app/replies`;
+  const subject = `Interested reply from ${who}`;
+  const snippet = (args.snippet ?? "").slice(0, 300);
+  const text = [
+    `${who} replied${args.campaign ? ` to "${args.campaign}"` : ""} and sounds interested:`,
+    ``,
+    snippet ? `"${snippet}"` : "(no preview)",
+    ``,
+    `Answer from EmailsVia: ${inboxUrl}`,
+    ``,
+    `— EmailsVia`,
+  ].join("\n");
+  const html = `
+    <p><strong>${escapeHtml(who)}</strong> replied${args.campaign ? ` to “${escapeHtml(args.campaign)}”` : ""} and sounds interested:</p>
+    ${snippet ? `<blockquote style="margin:12px 0;padding:8px 12px;border-left:3px solid #10b981;color:#333">${escapeHtml(snippet)}</blockquote>` : ""}
+    <p><a href="${inboxUrl}">Open the reply and answer</a></p>
+    <p style="color:#888;font-size:12px">Turn these off in EmailsVia → Settings.</p>
+  `;
+  return sendTransactional({
+    to: args.to,
+    subject,
+    textBody: text,
+    htmlBody: html,
+    tag: "reply-interested",
+  });
+}

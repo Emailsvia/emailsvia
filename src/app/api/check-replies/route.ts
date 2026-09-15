@@ -2,15 +2,22 @@ import { NextRequest, NextResponse } from "next/server";
 import * as Sentry from "@sentry/nextjs";
 import { supabaseAdmin } from "@/lib/supabase";
 import { fetchIncomingMessages } from "@/lib/replies";
+import { serversFromRow, SENDER_SERVER_COLUMNS } from "@/lib/mail";
 import { listInboxSince } from "@/lib/gmail";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { cronBearerOk } from "@/lib/tokens";
-import { classifyError } from "@/lib/errors";
+import { classifyError, classifyDsn } from "@/lib/errors";
 import { classifyReply } from "@/lib/triage";
 import { mapWithLimit } from "@/lib/email-validator";
 import { markSenderRevoked } from "@/lib/sender-revoke";
 import { dispatch as fireWebhook } from "@/lib/webhooks";
 import { loadReplyPollUserIds } from "@/lib/user-settings";
+import { OOO_PAUSE_DAYS } from "@/lib/followup-guard";
+import { emitBounced, emitSequenceStopped, emitCampaignPaused } from "@/lib/events";
+import { getAiProvider } from "@/lib/ai-provider";
+import { applyIntentActions } from "@/lib/reply-actions";
+import { stopDomainAfterReply, suppressEmail, maybePauseForBounces } from "@/lib/sequence-stop";
+import type { IncomingMessage } from "@/lib/replies";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -58,7 +65,7 @@ async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<Ne
   const { data: allSenders } = await db
     .from("senders")
     .select(
-      "id, email, app_password, user_id, auth_method, oauth_refresh_token, oauth_access_token, oauth_expires_at, oauth_status"
+      `id, email, app_password, user_id, auth_method, oauth_refresh_token, oauth_access_token, oauth_expires_at, oauth_status, ${SENDER_SERVER_COLUMNS}`
     );
   if (!allSenders || allSenders.length === 0) return NextResponse.json({ status: "no_senders" });
 
@@ -126,7 +133,11 @@ async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<Ne
         }
       } else if (s.app_password) {
         messages = await fetchIncomingMessages(
-          { email: s.email, appPassword: decryptSecret(s.app_password) },
+          {
+            email: s.email,
+            appPassword: decryptSecret(s.app_password),
+            imap: serversFromRow(s).imap,
+          },
           since
         );
       } else {
@@ -167,13 +178,49 @@ async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<Ne
       continue;
     }
 
-    // Campaigns for this sender
-    const { data: campaignRows } = await db
-      .from("campaigns")
-      .select("id")
-      .eq("sender_id", s.id);
-    const campaignIds = (campaignRows ?? []).map((c) => c.id);
-    if (campaignIds.length === 0) {
+    // Campaigns this sender sends for: its own single-sender campaigns plus
+    // any where it's in the rotation pool (replies land in whichever inbox
+    // sent the first email).
+    const [{ data: campaignRows }, { data: rotationRows }] = await Promise.all([
+      db.from("campaigns").select("id, stop_on_domain_reply").eq("sender_id", s.id),
+      db.from("campaign_senders").select("campaign_id").eq("sender_id", s.id),
+    ]);
+    const campaignIds = Array.from(
+      new Set([
+        ...(campaignRows ?? []).map((c) => c.id as string),
+        ...(rotationRows ?? []).map((r) => r.campaign_id as string),
+      ])
+    );
+    // Recipients this inbox could hear back from:
+    //   - everyone it actually emailed (recipients.sender_id pinned to it),
+    //     in any campaign, even if the campaign has since switched sender
+    //   - legacy rows with no pin, in campaigns it's attached to
+    // Only sent/replied rows can plausibly get a reply. Newest first so the
+    // email fallback maps an address to the most recent campaign.
+    const recipientCols = "id, email, campaign_id, status, message_id, sender_id, sent_at, follow_up_count";
+    const [{ data: pinnedRows }, { data: legacyRows }] = await Promise.all([
+      db
+        .from("recipients")
+        .select(recipientCols)
+        .eq("sender_id", s.id)
+        .in("status", ["sent", "replied"])
+        .order("sent_at", { ascending: false, nullsFirst: false })
+        .range(0, 99999),
+      campaignIds.length > 0
+        ? db
+            .from("recipients")
+            .select(recipientCols)
+            .in("campaign_id", campaignIds)
+            .is("sender_id", null)
+            .in("status", ["sent", "replied"])
+            .order("sent_at", { ascending: false, nullsFirst: false })
+            .range(0, 99999)
+        : Promise.resolve({ data: [] as Array<{ id: string; email: string; campaign_id: string; status: string; message_id: string | null; sender_id: string | null; sent_at: string | null; follow_up_count: number }> }),
+    ]);
+    const recipientsRows = [...(pinnedRows ?? []), ...(legacyRows ?? [])].sort(
+      (x, y) => new Date(y.sent_at ?? 0).getTime() - new Date(x.sent_at ?? 0).getTime()
+    );
+    if (recipientsRows.length === 0) {
       results.push({
         sender: s.email, checked: messages.length,
         matched_by_thread: 0, matched_by_from: 0,
@@ -182,33 +229,34 @@ async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<Ne
       continue;
     }
 
-    // Fetch recipients in this sender's campaigns (email + message_id both matter).
-    // Only recipients whose initial mail actually went out can plausibly
-    // receive a reply (sent or replied — the latter still receives
-    // follow-up replies on the same thread). Skip pending / unsubscribed
-    // / failed / bounced. Matters once a sender has 100K+ historical
-    // recipients across many campaigns.
-    const { data: recipientsRows } = await db
-      .from("recipients")
-      .select("id, email, campaign_id, status, message_id")
-      .in("campaign_id", campaignIds)
-      .in("status", ["sent", "replied"])
-      .range(0, 99999);
+    // Company-level stop flag for every campaign those recipients belong to.
+    const domainStopByCampaign = new Map<string, boolean>();
+    for (const c of campaignRows ?? []) domainStopByCampaign.set(c.id, c.stop_on_domain_reply !== false);
+    const missingFlags = Array.from(new Set(recipientsRows.map((r) => r.campaign_id))).filter(
+      (id) => !domainStopByCampaign.has(id)
+    );
+    if (missingFlags.length > 0) {
+      const { data: extra } = await db
+        .from("campaigns")
+        .select("id, stop_on_domain_reply")
+        .in("id", missingFlags);
+      for (const c of extra ?? []) domainStopByCampaign.set(c.id, c.stop_on_domain_reply !== false);
+    }
 
     // Two indexes: by message_id (authoritative — this is a genuine thread reply)
     // and by email (fallback — used only when the reply also carries SOME
     // In-Reply-To/References, which rules out unrelated mail from that address).
-    const byMsgId = new Map<string, { id: string; campaign_id: string; status: string }>();
-    const byEmail = new Map<string, { id: string; campaign_id: string; status: string }>();
-    for (const r of recipientsRows ?? []) {
+    type Hit = { id: string; email: string; campaign_id: string; status: string; follow_up_count: number };
+    const byMsgId = new Map<string, Hit>();
+    const byEmail = new Map<string, Hit>();
+    const byId = new Map<string, Hit>();
+    for (const r of recipientsRows) {
+      const entry: Hit = { id: r.id, email: r.email, campaign_id: r.campaign_id, status: r.status, follow_up_count: r.follow_up_count ?? 0 };
+      byId.set(r.id, entry);
       const mid = normalizeMsgId(r.message_id);
-      if (mid && !byMsgId.has(mid)) {
-        byMsgId.set(mid, { id: r.id, campaign_id: r.campaign_id, status: r.status });
-      }
+      if (mid && !byMsgId.has(mid)) byMsgId.set(mid, entry);
       const lo = r.email.toLowerCase();
-      if (!byEmail.has(lo)) {
-        byEmail.set(lo, { id: r.id, campaign_id: r.campaign_id, status: r.status });
-      }
+      if (!byEmail.has(lo)) byEmail.set(lo, entry);
     }
 
     let savedCount = 0;
@@ -217,17 +265,37 @@ async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<Ne
     let skippedAuto = 0;
     let skippedBounce = 0;
     const repliedRecipientIds = new Set<string>();
+    const bouncedRecipientIds = new Set<string>();
+    // Campaigns whose mail a receiver rejected for failed SPF/DKIM/DMARC.
+    const senderAuthCampaigns = new Set<string>();
+    // recipient id → latest out-of-office date seen this run.
+    const oooByRecipient = new Map<string, Date>();
 
     for (const msg of messages) {
       // Skip bounces (mailer-daemon / DSNs) — those aren't from the recipient
       // at all, so counting them as a "reply" is factually wrong. Everything
       // else is kept, including auto-replies / OOO / vacation responders —
       // the owner wants to see every inbound signal, not just "active" ones.
-      if (msg.is_bounce) { skippedBounce++; continue; }
+      if (msg.is_bounce) {
+        // Auto-Submitted: auto-generated from the recipient's own address is
+        // an auto-responder, not a DSN — fall through and treat it as one.
+        if (!byEmail.has(msg.from)) {
+          skippedBounce++;
+          const target = matchBounce(msg, byMsgId, byEmail);
+          if (target) {
+            const dsn = classifyDsn(msg.subject, msg.body_text);
+            if (dsn === "hard" && target.status === "sent") bouncedRecipientIds.add(target.id);
+            if (dsn === "sender_auth") senderAuthCampaigns.add(target.campaign_id);
+            // "soft" (delays, quota, unrecognised): ignore.
+          }
+          continue;
+        }
+        msg.is_auto_reply = true;
+      }
 
       // 1) Authoritative match: In-Reply-To / References contains one of our
       //    outbound Message-IDs. Guaranteed genuine reply to our campaign.
-      let hit: { id: string; campaign_id: string; status: string } | undefined;
+      let hit: Hit | undefined;
       const candidateMsgIds = [
         ...(msg.in_reply_to ? [msg.in_reply_to] : []),
         ...msg.references,
@@ -262,6 +330,8 @@ async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<Ne
             body_text: msg.body_text,
             body_html: msg.body_html,
             received_at: msg.date?.toISOString() ?? null,
+            is_auto_reply: msg.is_auto_reply,
+            message_id: msg.message_id,
           },
           { onConflict: "recipient_id,received_at" }
         )
@@ -296,9 +366,18 @@ async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<Ne
             snippet: msg.snippet,
             received_at: msg.date?.toISOString() ?? null,
           },
-        });
+        }, { queueOnly: true });
       }
 
+      // Out-of-office replies are saved (the owner sees them) but don't
+      // end the sequence — they push the next follow-up out instead.
+      if (msg.is_auto_reply) {
+        skippedAuto++;
+        const d = msg.date ?? new Date();
+        const prev = oooByRecipient.get(hit.id);
+        if (hit.status === "sent" && (!prev || d > prev)) oooByRecipient.set(hit.id, d);
+        continue;
+      }
       if (hit.status === "sent" || hit.status === "pending") {
         repliedRecipientIds.add(hit.id);
       }
@@ -312,6 +391,7 @@ async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<Ne
           status: "replied",
           replied_at: new Date().toISOString(),
           next_follow_up_at: null,
+          stop_reason: "replied",
         })
         .in("id", Array.from(repliedRecipientIds))
         .select("id");
@@ -321,6 +401,62 @@ async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<Ne
         });
       }
       markedReplied = updated?.length ?? 0;
+      // Company-level stop: one reply from acme.com ends the sequence for
+      // everyone else at acme.com in that campaign.
+      for (const rid of repliedRecipientIds) {
+        const r = byId.get(rid);
+        if (r && updated?.some((u) => u.id === rid)) {
+          await emitSequenceStopped(db, { ...r, user_id: s.user_id }, "replied", r.follow_up_count);
+        }
+        if (r && domainStopByCampaign.get(r.campaign_id)) {
+          await stopDomainAfterReply(db, r.campaign_id, { id: r.id, email: r.email });
+        }
+      }
+    }
+
+    // Hard bounces reported by delivery-failure notices: stop the sequence
+    // and add the address to the user's do-not-contact list.
+    for (const rid of bouncedRecipientIds) {
+      if (repliedRecipientIds.has(rid)) continue;
+      const r = byId.get(rid);
+      if (!r) continue;
+      await db
+        .from("recipients")
+        .update({ status: "bounced", next_follow_up_at: null, stop_reason: "bounced" })
+        .eq("id", rid)
+        .eq("status", "sent");
+      await suppressEmail(db, s.user_id, r.email, "bounced", r.campaign_id);
+      await emitBounced(db, { ...r, user_id: s.user_id }, null);
+      await emitSequenceStopped(db, { ...r, user_id: s.user_id }, "bounced", r.follow_up_count);
+    }
+    const bouncedCampaigns = new Set(
+      Array.from(bouncedRecipientIds).map((rid) => byId.get(rid)?.campaign_id).filter((x): x is string => !!x)
+    );
+    for (const cid of bouncedCampaigns) await maybePauseForBounces(db, cid);
+    for (const cid of senderAuthCampaigns) {
+      const { data: paused } = await db
+        .from("campaigns")
+        .update({ status: "paused", paused_reason: "sender_auth" })
+        .eq("id", cid)
+        .eq("status", "running")
+        .select("id, user_id, name");
+      if (paused?.[0]) await emitCampaignPaused(db, paused[0], "sender_auth");
+    }
+
+    // Pause sequences for out-of-office recipients: next follow-up no earlier
+    // than OOO_PAUSE_DAYS after the auto-reply. Keyed on the message date, so
+    // re-reading the same OOO on later polls is a no-op.
+    for (const [recipientId, d] of oooByRecipient) {
+      if (repliedRecipientIds.has(recipientId)) continue;
+      const resumeAt = new Date(d.getTime() + OOO_PAUSE_DAYS * 86_400_000);
+      if (resumeAt <= new Date()) continue;
+      await db
+        .from("recipients")
+        .update({ next_follow_up_at: resumeAt.toISOString() })
+        .eq("id", recipientId)
+        .eq("status", "sent")
+        .not("next_follow_up_at", "is", null)
+        .lt("next_follow_up_at", resumeAt.toISOString());
     }
 
     results.push({
@@ -342,7 +478,9 @@ async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<Ne
   const TRIAGE_CONCURRENCY = 4;
   let triageRan = 0;
 
-  if (pendingClassify.length > 0 && process.env.ANTHROPIC_API_KEY) {
+  // Any configured provider (Groq / Gemini / Anthropic) — this used to
+  // require ANTHROPIC_API_KEY even when triage itself ran on Groq or Gemini.
+  if (pendingClassify.length > 0 && getAiProvider()) {
     const userIds = Array.from(new Set(pendingClassify.map((p) => p.user_id)));
     const { data: subs } = await db
       .from("subscriptions")
@@ -365,11 +503,16 @@ async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<Ne
       const outcomes = await mapWithLimit(eligiblePending, TRIAGE_CONCURRENCY, async (p) => {
         const out = await classifyReply({ subject: p.subject, body: p.body });
         if (!out) return { id: p.reply_id, written: false };
-        const { error } = await db
+        // Only label rows still unlabelled: if the user set a label by hand
+        // while this ran, that one wins and no AI actions fire.
+        const { data: labelled, error } = await db
           .from("replies")
-          .update({ intent: out.intent, intent_confidence: out.confidence })
-          .eq("id", p.reply_id);
-        if (!error) {
+          .update({ intent: out.intent, intent_confidence: out.confidence, intent_source: "ai" })
+          .eq("id", p.reply_id)
+          .is("intent", null)
+          .select("id");
+        if (!error && labelled?.length) {
+          await applyIntentActions(db, p.reply_id, out.intent);
           // Fire reply.classified webhook with the same event_id pattern
           // ("classified:<reply_id>") so it's distinct from the earlier
           // reply.received delivery.
@@ -382,7 +525,7 @@ async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<Ne
               intent: out.intent,
               confidence: out.confidence,
             },
-          });
+          }, { queueOnly: true });
         }
         return { id: p.reply_id, written: !error };
       });
@@ -398,4 +541,31 @@ async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<Ne
       classified: triageRan,
     },
   });
+}
+
+// Tie a delivery-failure notice back to the recipient it's about. DSNs
+// usually quote the original Message-ID (threading headers or the attached
+// original); otherwise fall back to the single recipient address the body
+// mentions. Ambiguous notices (several of our recipients named) are ignored.
+function matchBounce<T extends { id: string }>(
+  msg: IncomingMessage,
+  byMsgId: Map<string, T>,
+  byEmail: Map<string, T>
+): T | null {
+  const text = `${msg.body_text ?? ""}\n${msg.body_html ?? ""}`;
+  const ids = [
+    ...(msg.in_reply_to ? [msg.in_reply_to] : []),
+    ...msg.references,
+    ...(text.match(/<[^<>\s@]+@[^<>\s]+>/g) ?? []),
+  ];
+  for (const id of ids) {
+    const hit = byMsgId.get(id);
+    if (hit) return hit;
+  }
+  const found = new Map<string, T>();
+  for (const addr of text.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) ?? []) {
+    const hit = byEmail.get(addr.toLowerCase());
+    if (hit) found.set(hit.id, hit);
+  }
+  return found.size === 1 ? Array.from(found.values())[0] : null;
 }

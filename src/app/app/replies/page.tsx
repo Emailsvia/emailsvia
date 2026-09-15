@@ -15,14 +15,15 @@ export default function RepliesPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [intentFilter, setIntentFilter] = useState<Intent | "all">("all");
+  const [view, setView] = useState<View>("inbox");
 
-  async function load() {
-    const r = await fetch("/api/replies", { cache: "no-store" });
+  async function load(v: View = view) {
+    const r = await fetch(`/api/replies?view=${v}`, { cache: "no-store" });
     const d = await r.json();
     setReplies(d.replies ?? []);
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { setReplies(null); load(view); }, [view]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function reload() {
     setRunning(true);
@@ -119,6 +120,25 @@ export default function RepliesPage() {
           }
         />
 
+        {/* Inbox / Done / Auto-replies / All */}
+        <div className="mb-3 flex items-center gap-1 border-b border-ink-100" role="tablist">
+          {VIEWS.map((v) => (
+            <button
+              key={v.id}
+              type="button"
+              role="tab"
+              aria-selected={view === v.id}
+              onClick={() => { setIntentFilter("all"); setView(v.id); }}
+              className={`px-3 py-2 text-[13px] -mb-px border-b-2 transition-colors cursor-pointer ${
+                view === v.id ? "border-ink text-ink font-medium" : "border-transparent text-ink-500 hover:text-ink"
+              }`}
+              title={v.hint}
+            >
+              {v.label}
+            </button>
+          ))}
+        </div>
+
         {/* Intent chip row */}
         {replies && replies.length > 0 && (
           <div className="mb-3 flex items-center gap-1.5 flex-wrap">
@@ -187,8 +207,12 @@ export default function RepliesPage() {
                 <path d="M9 17l-5-5 5-5M4 12h11a5 5 0 015 5v2" />
               </svg>
             }
-            title="No replies yet"
-            body="Inbound replies show up here within five minutes of landing in your Gmail. Make sure the Supabase cron is wired up and at least one campaign is sending."
+            title={view === "inbox" ? "Inbox zero" : view === "done" ? "Nothing marked done yet" : view === "auto" ? "No auto-replies" : "No replies yet"}
+            body={
+              view === "inbox"
+                ? "New replies land here within five minutes (turn on Reply detection in Settings). Answered and done replies move to Done; out-of-office messages go to Auto-replies."
+                : "Replies you answer or mark done show up here."
+            }
           />
         )}
 
@@ -216,13 +240,21 @@ export default function RepliesPage() {
           </div>
         )}
 
-        <ReplyDrawer reply={active} onClose={() => setActive(null)} />
+        <ReplyDrawer reply={active} onClose={() => setActive(null)} onChanged={() => load()} />
       </div>
     </AppShell>
   );
 }
 
 /* ----------------------------------------------------------------------- */
+
+type View = "inbox" | "done" | "auto" | "all";
+const VIEWS: Array<{ id: View; label: string; hint: string }> = [
+  { id: "inbox", label: "Inbox", hint: "Replies you haven't answered or marked done" },
+  { id: "done", label: "Done", hint: "Answered or marked done" },
+  { id: "auto", label: "Auto-replies", hint: "Out-of-office and other auto-responders" },
+  { id: "all", label: "All", hint: "Everything" },
+];
 
 function IntentChip({
   label, count, active, onClick, dot, textColor, bg,
@@ -305,7 +337,10 @@ function ReplyRow({
 
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-[14px] font-medium text-ink truncate">{senderName}</span>
+          {!reply.read_at && (
+            <span className="inline-block w-2 h-2 rounded-full bg-[rgb(255_99_99)] shrink-0" aria-label="Unread" />
+          )}
+          <span className={`text-[14px] truncate ${reply.read_at ? "font-medium text-ink-700" : "font-semibold text-ink"}`}>{senderName}</span>
           {reply.recipient?.company && (
             <span className="text-[12.5px] text-ink-500">@ {reply.recipient.company}</span>
           )}

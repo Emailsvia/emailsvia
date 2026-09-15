@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
-    "src/app/api/tick/route.ts": { "maxDuration": 60 },
+    "src/app/api/tick/route.ts": { "maxDuration": 120 },
     "src/app/api/check-replies/route.ts": { "maxDuration": 60 },
     "src/app/api/cron/refresh-tokens/route.ts": { "maxDuration": 60 },
     "src/app/api/v1/campaigns/from-sheet/route.ts": { "maxDuration": 60 },

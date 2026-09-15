@@ -53,6 +53,11 @@ select cron.unschedule('emailsvia-check-replies')
 select cron.unschedule('emailsvia-refresh-tokens')
   where exists (select 1 from cron.job where jobname = 'emailsvia-refresh-tokens');
 
+-- Every job below is gated with `where exists (...)`: the HTTP call is only
+-- made when the app has work to do. An idle app gets zero requests, so the
+-- Railway service can sleep (railway.json `sleepApplication`) instead of
+-- being woken 1,500+ times a day to answer "nothing to do".
+
 -- Tick every minute. `params := '{}'::jsonb` is required to work around a
 -- pg_net overload bug where the internal _encode_url_with_params_array call
 -- fails when params is omitted.
@@ -68,7 +73,8 @@ select cron.schedule(
         'Bearer ' || (select value from public.cron_config where key = 'cron_secret')
       ),
       timeout_milliseconds := 15000
-    );
+    )
+    where exists (select 1 from public.campaigns where status = 'running');
   $$
 );
 
@@ -85,7 +91,8 @@ select cron.schedule(
         'Bearer ' || (select value from public.cron_config where key = 'cron_secret')
       ),
       timeout_milliseconds := 50000
-    );
+    )
+    where exists (select 1 from public.user_settings where poll_replies);
   $$
 );
 
@@ -105,6 +112,39 @@ select cron.schedule(
         'Bearer ' || (select value from public.cron_config where key = 'cron_secret')
       ),
       timeout_milliseconds := 55000
+    )
+    where exists (
+      select 1 from public.senders
+      where auth_method = 'oauth' and oauth_status = 'ok'
+        and oauth_refresh_token is not null
+        and oauth_expires_at <= now() + interval '2 hours'
+    );
+  $$
+);
+
+-- Webhook delivery queue + retries and CRM push retries — every minute,
+-- only when something is due.
+select cron.unschedule('emailsvia-webhooks')
+  where exists (select 1 from cron.job where jobname = 'emailsvia-webhooks');
+select cron.schedule(
+  'emailsvia-webhooks',
+  '* * * * *',
+  $$
+    select net.http_get(
+      url := (select value from public.cron_config where key = 'app_url') || '/api/cron/webhooks',
+      params := '{}'::jsonb,
+      headers := jsonb_build_object(
+        'Authorization',
+        'Bearer ' || (select value from public.cron_config where key = 'cron_secret')
+      ),
+      timeout_milliseconds := 55000
+    )
+    where exists (
+      select 1 from public.webhook_deliveries
+      where status = 'pending' and next_attempt_at <= now()
+    ) or exists (
+      select 1 from public.integration_syncs
+      where status = 'failed' and next_attempt_at <= now()
     );
   $$
 );

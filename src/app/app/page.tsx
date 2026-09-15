@@ -53,14 +53,14 @@ export default function AppHome() {
 
   useEffect(() => {
     loadCampaigns();
-    const t = setInterval(loadCampaigns, 15_000);
+    const t = setInterval(() => { if (!document.hidden) loadCampaigns(); }, 15_000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showArchived]);
 
   useEffect(() => {
     loadDashboard();
-    const t = setInterval(loadDashboard, 30_000);
+    const t = setInterval(() => { if (!document.hidden) loadDashboard(); }, 30_000);
     return () => clearInterval(t);
   }, []);
 

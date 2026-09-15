@@ -2,6 +2,13 @@ import type { NextConfig } from "next";
 import { withSentryConfig } from "@sentry/nextjs";
 
 const nextConfig: NextConfig = {
+  // Self-contained server bundle (only the node_modules actually imported)
+  // for the Railway Docker image — smaller image, lower idle memory.
+  output: "standalone",
+  // Type-checking (googleapis' types especially) needs >4GB of heap, which
+  // OOMs container builders. The Dockerfile sets SKIP_TYPECHECK=1; run
+  // `npx tsc --noEmit` before deploying instead.
+  typescript: { ignoreBuildErrors: process.env.SKIP_TYPECHECK === "1" },
   experimental: { serverActions: { bodySizeLimit: "10mb" } },
 };
 

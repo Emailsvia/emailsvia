@@ -31,7 +31,7 @@ import { createServerClient, type CookieOptions } from "@supabase/ssr";
 const ADMIN_PREFIX = "/admin";
 const APP_PREFIX = "/app";
 const AUTH_PAGES = ["/login", "/signup", "/forgot"];
-const ALWAYS_PUBLIC = ["/pricing", "/privacy", "/terms", "/auth/callback"];
+const ALWAYS_PUBLIC = ["/pricing", "/privacy", "/terms", "/auth/callback", "/robots.txt"];
 
 const PUBLIC_API_PREFIXES = [
   "/api/auth/",        // login/signup/logout/oauth-callback
@@ -80,9 +80,25 @@ function homeFor(isAdmin: boolean): string {
 export async function middleware(req: NextRequest) {
   const { pathname, searchParams } = req.nextUrl;
 
+  // The app defines no Server Actions, so any request carrying a Next-Action
+  // header is a scanner probe or a tab from an old build. Reject it here —
+  // otherwise Next logs "Failed to find Server Action" for every one.
+  if (req.headers.has("next-action")) {
+    return new NextResponse(null, { status: 404 });
+  }
+
   // API routes — handlers do their own auth.
   if (pathname.startsWith("/api/")) {
     return NextResponse.next();
+  }
+
+  // Canonical host: apex → www for pages, so auth cookies + OAuth redirects
+  // live on one origin. API routes above are left alone — one-click
+  // unsubscribe POSTs and tracking links in already-sent mail hit the apex.
+  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+  if (host === "emailsvia.com") {
+    const url = new URL(pathname + req.nextUrl.search, "https://www.emailsvia.com");
+    return NextResponse.redirect(url, 308);
   }
 
   // Supabase OAuth completion safety net: if a Supabase project is misconfigured

@@ -4,6 +4,57 @@
 
 ---
 
+## WORKSPACE ALIAS — A1–A3 code  ✅ (2026-09-11)
+- [x] Migration `0018_sender_send_as.sql` (`senders.send_as_email`), not yet applied.
+- [x] Send path: From + Reply-To = alias when set, auth unchanged (`gmail.ts`, `mail.ts`).
+- [x] Loaders: via `SENDER_SERVER_COLUMNS` + `sendAs` in tick / test-send.
+- [x] API: `src/lib/sender-schema.ts` shared validator; senders POST/PATCH/GET.
+- [x] UI: `SendAsField` in add + edit forms, "sends as" line in the list.
+- Caught before build: exporting a zod schema from a route file breaks `next build` → moved to lib.
+- Verified: tsc exit 0. NOT verified: build, browser, real send.
+
+## CUSTOM SMTP — PART 5 — DNS recon  ✅ (2026-09-11), user actions pending
+- [x] whois: registrar Spaceship, NS = Cloudflare (lars/zelda), created 2026-07-11.
+- [x] Authoritative (lars.ns.cloudflare.com): MX = Cloudflare Email Routing, SPF = Cloudflare
+  include only, no DKIM, no DMARC.
+- [x] Spacemail preset confirmed: `mail.spacemail.com` resolves (198.177.121.32); 465/587/993 open.
+- [x] Required records identified from Spaceship's Cloudflare guide → toBeDone 5.0–5.9.
+- NOT done: records not added (user's Cloudflare/Spaceship accounts). DNS verification must
+  happen from an external checker — local resolver flaky.
+
+## CUSTOM SMTP — PART 4 — API + UI  ✅ DONE (2026-09-11)
+- [x] `src/app/api/senders/route.ts`: Gmail vs SMTP schemas, host/port validation,
+  SMTP + IMAP verify before save, provider + host columns stored, returned in GET/POST.
+- [x] `src/app/app/senders/page.tsx`: "Custom domain" entry points, provider presets
+  (Spaceship default, Zoho, Outlook/M365, Other), `ServerFields` for SMTP/IMAP, masked
+  password, `smtp · host` badge. Gmail app-password form unchanged.
+- [x] Fixed Part 3 bug: whitespace stripped only from Gmail app passwords now.
+- Verified: `npx tsc --noEmit` exit 0. NOT verified: build, lint, or the form in a browser
+  (dev server live on :3000; runtime test is Part 6).
+
+## CUSTOM SMTP — PART 3 — Backend  ✅ DONE (2026-09-11)
+- [x] `src/lib/mail.ts`: `HostConfig`, `GMAIL_SMTP`/`GMAIL_IMAP`, `SENDER_SERVER_COLUMNS`,
+  `serversFromRow()`; transporter uses per-sender host, `requireTLS` on non-TLS ports,
+  cache keyed `host:port:email`; `verifyCredentials` checks SMTP + IMAP for custom senders.
+- [x] `src/lib/replies.ts`: `makeImapClient` + `verifyImap`; `fetchIncomingMessages` takes optional `imap`.
+- [x] Routes pass the new columns: `api/tick` (rotation + single selects, `toSenderCreds`),
+  `api/check-replies`, `api/test-send`.
+- [x] Gmail senders unchanged: no `smtp`/`imap` on the creds → same Gmail hosts as before.
+- Verified: `npx tsc --noEmit` exit 0. NOT verified: `next build` (dev server live on :3000),
+  lint (no ESLint config — see error.md). No runtime test yet (Part 6).
+
+## CUSTOM SMTP — PART 2 — DB migration  ✅ DONE (2026-09-11)
+- [x] `supabase/migrations/0017_custom_smtp.sql`: `provider` ('gmail'|'smtp', default gmail)
+  + smtp/imap host/port/secure columns + `senders_smtp_config_chk` constraint.
+- [x] Idempotent (`add column if not exists`, drop-then-add constraint). Existing rows →
+  provider='gmail', constraint passes trivially. RLS `own_rows for all` covers new cols.
+- [x] Applied to Supabase by the user.
+
+## CUSTOM SMTP — PART 1 — Plan  ✅ (2026-09-11)
+- [x] Recon: Gmail hosts hard-coded in `mail.ts:34` + `replies.ts:113`. Backlog Parts 1–7 written.
+
+---
+
 ## PART 3 — Testing & verification  ✅ DONE, automated (2026-07-17)
 - [x] 3.1 `npm run lint` exit 0 · `npm run build` exit 0 (full route table generated).
 - [x] 3.2 GA present in served HTML: `<link rel=preload href=…gtag/js?id=G-9W1JYN6VV7 as=script>`

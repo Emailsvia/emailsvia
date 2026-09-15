@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import Logo from "@/components/Logo";
 import CommandPalette from "@/components/CommandPalette";
 import AppAlerts from "@/components/AppAlerts";
+import { useAlerts, type Alert } from "@/lib/alerts-client";
 
 type NavSection = {
   label: string;
@@ -240,14 +241,6 @@ function CommandPaletteTriggerCompact() {
   );
 }
 
-type Alert = {
-  id: string;
-  severity: "error" | "warn" | "info";
-  title: string;
-  body: string;
-  href: string;
-  cta: string;
-};
 
 const ALERT_TONE: Record<Alert["severity"], { dot: string; iconBg: string; iconColor: string }> = {
   error: {
@@ -268,22 +261,9 @@ const ALERT_TONE: Record<Alert["severity"], { dot: string; iconBg: string; iconC
 };
 
 function AlertsBell() {
-  const [alerts, setAlerts] = useState<Alert[]>([]);
+  const alerts = useAlerts() ?? [];
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    const load = () => {
-      fetch("/api/app/alerts", { cache: "no-store" })
-        .then((r) => (r.ok ? r.json() : { alerts: [] }))
-        .then((d) => { if (!cancelled) setAlerts((d.alerts ?? []) as Alert[]); })
-        .catch(() => {});
-    };
-    load();
-    const id = setInterval(load, 60_000);
-    return () => { cancelled = true; clearInterval(id); };
-  }, []);
 
   // Click-outside + ESC dismiss
   useEffect(() => {

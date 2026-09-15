@@ -5,6 +5,51 @@
 
 ---
 
+## 2026-09-14 — Railway logs: "Failed to find Server Action" + ECONNRESET
+- **Symptom:** bursts of `Failed to find Server Action "y"` / `"67de7412"` right after the container
+  woke, plus one `[Error: aborted] { code: 'ECONNRESET' }`.
+- **Cause:** the app has NO server actions. Requests with a `Next-Action` header are scanner probes
+  ("y") or a browser tab from an older build. Next logs an error for each. ECONNRESET = client hung
+  up mid-request (came with the probe burst) — not a server bug.
+- **Fix:** middleware returns 404 for any request with `next-action` header before Next handles it.
+  Verified live: both probe ids → 404, no log lines. Also added `src/app/robots.ts` (was 404).
+- **Status:** ✅ resolved
+
+## 2026-09-11 — Local DNS lookups return inconsistent results
+- **Symptom:** same query flips between runs: `mx1.spacemail.com` → 162.255.118.30, later
+  NXDOMAIN via 1.1.1.1; 8.8.8.8 returns no response at all; `+short` queries sometimes empty
+  for names that exist (incl. tasklyanything.net NS, which the authoritative server answers).
+- **Where:** `dig` from this machine, Part 5 recon.
+- **Cause:** unknown — local network/resolver interference. Authoritative queries
+  (`@lars.ns.cloudflare.com`) and TCP port probes were consistent.
+- **Fix:** trust only authoritative answers + positive results; verify the final records from
+  an external checker (MXToolbox / mail-tester.com).
+- **Status:** open (workaround in place)
+
+## 2026-09-11 — Port probe reported every port "closed"
+- **Symptom:** `nc -z` loop printed `closed smtp.spacemail.com 465:` for all hosts.
+- **Cause:** `set -- $hp` doesn't word-split in zsh, so `$1` held "host port" and `$2` was
+  empty. Same root as the PIPESTATUS issue: bash idioms in a zsh shell.
+- **Fix:** shell function with explicit args → 465/587/993 on mail.spacemail.com OPEN.
+- **Status:** ✅ resolved
+
+## 2026-09-11 — `npm run lint` opens an interactive ESLint setup prompt
+- **Symptom:** `next lint` prints "How would you like to configure ESLint? ❯ Strict / Base / Cancel"
+  and waits for input instead of linting.
+- **Where:** `npm run lint`, during custom-SMTP Part 3 verification.
+- **Cause:** repo has no ESLint config file and no `eslint` dependency in package.json.
+  Pre-existing, not caused by Part 3. (`next lint` is also deprecated in Next 16.)
+- **Fix:** none yet — needs a decision: add ESLint (`eslint` + `eslint-config-next` + config)
+  or drop lint from the verification checklist.
+- **Status:** open
+
+## 2026-09-11 — Exit codes read as blank in the shell
+- **Symptom:** `cmd | head; echo ${PIPESTATUS[0]}` printed an empty exit code.
+- **Cause:** the shell is zsh; `PIPESTATUS` is bash-only (zsh uses `$pipestatus`).
+  An empty exit code is NOT a pass.
+- **Fix:** redirect output to a file and read `$?` directly — `tsc` then reported exit 0.
+- **Status:** ✅ resolved (lesson: don't pipe verification commands in zsh)
+
 ## 2026-07-17 — `next build` fails: Cannot find module './6141.js'
 - **Symptom:** `unhandledRejection [Error: Cannot find module './6141.js']` during
   `Collecting page data ...`, require stack rooted at `.next/server/webpack-runtime.js`

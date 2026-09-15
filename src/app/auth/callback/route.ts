@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseUser } from "@/lib/supabase-server";
+import { requestOrigin } from "@/lib/tokens";
 
 export const runtime = "nodejs";
 
@@ -7,23 +8,24 @@ export const runtime = "nodejs";
 // for a session cookie, then sends the user to ?next.
 export async function GET(req: NextRequest) {
   const code = req.nextUrl.searchParams.get("code");
+  // Behind a proxy (Railway), req.nextUrl carries the container's bind
+  // address (0.0.0.0:8080), not the public host — build redirects from
+  // the forwarded origin instead.
+  const origin = requestOrigin(req);
   const next = req.nextUrl.searchParams.get("next") ?? "/app";
 
   if (code) {
     const sb = await supabaseUser();
     const { error } = await sb.auth.exchangeCodeForSession(code);
     if (error) {
-      const url = req.nextUrl.clone();
-      url.pathname = "/login";
+      const url = new URL("/login", origin);
       url.searchParams.set("error", "oauth_exchange_failed");
       return NextResponse.redirect(url);
     }
   }
 
-  const dest = req.nextUrl.clone();
   const { path, query } = splitNext(next);
-  dest.pathname = path;
-  dest.search = query;
+  const dest = new URL(path + query, origin);
   return NextResponse.redirect(dest);
 }
 

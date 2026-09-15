@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { supabaseUser } from "@/lib/supabase-server";
 import { getUser } from "@/lib/auth-server";
+import { SendAsEmail } from "@/lib/sender-schema";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,6 +12,7 @@ const PatchSchema = z.object({
   from_name: z.string().max(200).optional().nullable(),
   is_default: z.boolean().optional(),
   warmup_enabled: z.boolean().optional(),
+  send_as_email: SendAsEmail,
 });
 
 export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
@@ -39,7 +41,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     .from("senders")
     .update(update)
     .eq("id", id)
-    .select("id, label, email, from_name, is_default, warmup_enabled, warmup_started_at, created_at")
+    .select("id, label, email, from_name, is_default, warmup_enabled, warmup_started_at, send_as_email, created_at")
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ sender: data });

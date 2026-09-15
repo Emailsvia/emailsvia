@@ -1,38 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useAlerts, type Alert, type AlertSeverity } from "@/lib/alerts-client";
 
-type AlertSeverity = "error" | "warn" | "info";
-type Alert = {
-  id: string;
-  severity: AlertSeverity;
-  title: string;
-  body: string;
-  href: string;
-  cta: string;
-};
-
-// Banner stack rendered above every /app page. Polls the alerts feed every
-// 60s so a sender-revoked event surfaces without a refresh. Dismiss is
-// session-local — alerts come back next reload because they're sourced
-// from real account state, not "I clicked X".
+// Banner stack rendered above every /app page. The feed is polled every 60s
+// (shared with the header bell) so a sender-revoked event surfaces without a
+// refresh. Dismiss is session-local — alerts come back next reload because
+// they're sourced from real account state, not "I clicked X".
 export default function AppAlerts() {
-  const [alerts, setAlerts] = useState<Alert[] | null>(null);
+  const alerts = useAlerts();
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
-
-  useEffect(() => {
-    let cancelled = false;
-    function load() {
-      fetch("/api/app/alerts", { cache: "no-store" })
-        .then((r) => (r.ok ? r.json() : { alerts: [] }))
-        .then((d) => { if (!cancelled) setAlerts(d.alerts ?? []); })
-        .catch(() => { if (!cancelled) setAlerts([]); });
-    }
-    load();
-    const t = setInterval(load, 60_000);
-    return () => { cancelled = true; clearInterval(t); };
-  }, []);
 
   if (!alerts || alerts.length === 0) return null;
   const visible = alerts.filter((a) => !dismissed.has(a.id));

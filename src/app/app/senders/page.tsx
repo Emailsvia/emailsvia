@@ -15,7 +15,52 @@ type Sender = {
   warmup_started_at: string | null;
   auth_method?: "oauth" | "app_password";
   oauth_status?: "ok" | "revoked" | "pending";
+  provider?: "gmail" | "smtp";
+  smtp_host?: string | null;
+  send_as_email?: string | null;
   created_at: string;
+};
+
+type Preset = {
+  name: string;
+  smtp_host: string; smtp_port: number; smtp_secure: boolean;
+  imap_host: string; imap_port: number; imap_secure: boolean;
+  hint?: string;
+};
+
+// Common hosted-mail providers. "Other" = user fills the fields manually.
+const PRESETS: Record<string, Preset> = {
+  spaceship: {
+    name: "Spaceship (Spacemail)",
+    smtp_host: "mail.spacemail.com", smtp_port: 465, smtp_secure: true,
+    imap_host: "mail.spacemail.com", imap_port: 993, imap_secure: true,
+    hint: "Use the mailbox password. Confirm hosts under Spaceship → Email → Mail client setup.",
+  },
+  zoho: {
+    name: "Zoho Mail",
+    smtp_host: "smtp.zoho.com", smtp_port: 465, smtp_secure: true,
+    imap_host: "imap.zoho.com", imap_port: 993, imap_secure: true,
+    hint: "EU/IN accounts use smtp.zoho.eu / smtp.zoho.in. Needs IMAP enabled in Zoho settings.",
+  },
+  outlook: {
+    name: "Outlook / Microsoft 365",
+    smtp_host: "smtp.office365.com", smtp_port: 587, smtp_secure: false,
+    imap_host: "outlook.office365.com", imap_port: 993, imap_secure: true,
+    hint: "Requires SMTP AUTH enabled for the mailbox in the M365 admin center.",
+  },
+  other: {
+    name: "Other (enter manually)",
+    smtp_host: "", smtp_port: 465, smtp_secure: true,
+    imap_host: "", imap_port: 993, imap_secure: true,
+  },
+};
+
+const EMPTY_FORM = {
+  label: "", email: "", app_password: "", from_name: "", is_default: false, warmup_enabled: false,
+  send_as_email: "",
+  preset: "spaceship",
+  smtp_host: PRESETS.spaceship.smtp_host, smtp_port: PRESETS.spaceship.smtp_port, smtp_secure: PRESETS.spaceship.smtp_secure,
+  imap_host: PRESETS.spaceship.imap_host, imap_port: PRESETS.spaceship.imap_port, imap_secure: PRESETS.spaceship.imap_secure,
 };
 
 function warmupStatus(s: Sender) {
@@ -28,9 +73,21 @@ function warmupStatus(s: Sender) {
 
 export default function SendersPage() {
   const [senders, setSenders] = useState<Sender[] | null>(null);
-  const [adding, setAdding] = useState(false);
+  // null = form closed; otherwise which kind of sender is being added.
+  const [adding, setAddingMode] = useState<null | "gmail" | "smtp">(null);
+  const setAdding = (mode: false | "gmail" | "smtp") => setAddingMode(mode || null);
   const [err, setErr] = useState<string | null>(null);
-  const [form, setForm] = useState({ label: "", email: "", app_password: "", from_name: "", is_default: false, warmup_enabled: false });
+  const [form, setForm] = useState(EMPTY_FORM);
+  const isSmtp = adding === "smtp";
+
+  function applyPreset(key: string) {
+    const p = PRESETS[key];
+    setForm((f) => ({
+      ...f, preset: key,
+      smtp_host: p.smtp_host, smtp_port: p.smtp_port, smtp_secure: p.smtp_secure,
+      imap_host: p.imap_host, imap_port: p.imap_port, imap_secure: p.imap_secure,
+    }));
+  }
   const [saving, setSaving] = useState(false);
   const [flash, setFlash] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
 
@@ -71,6 +128,18 @@ export default function SendersPage() {
         from_name: form.from_name || null,
         is_default: form.is_default,
         warmup_enabled: form.warmup_enabled,
+        send_as_email: form.send_as_email.trim() || null,
+        ...(isSmtp
+          ? {
+              provider: "smtp",
+              smtp_host: form.smtp_host.trim(),
+              smtp_port: form.smtp_port,
+              smtp_secure: form.smtp_secure,
+              imap_host: form.imap_host.trim(),
+              imap_port: form.imap_port,
+              imap_secure: form.imap_secure,
+            }
+          : { provider: "gmail" }),
       }),
     });
     setSaving(false);
@@ -81,7 +150,7 @@ export default function SendersPage() {
       else setErr(`Failed (HTTP ${r.status}).`);
       return;
     }
-    setForm({ label: "", email: "", app_password: "", from_name: "", is_default: false, warmup_enabled: false });
+    setForm(EMPTY_FORM);
     setAdding(false);
     await load();
   }
@@ -102,21 +171,32 @@ export default function SendersPage() {
   }
 
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<{ label: string; from_name: string }>({ label: "", from_name: "" });
+  const [editForm, setEditForm] = useState<{ label: string; from_name: string; send_as_email: string }>({ label: "", from_name: "", send_as_email: "" });
   const [editSaving, setEditSaving] = useState(false);
+  const [editErr, setEditErr] = useState<string | null>(null);
 
   function startEdit(s: Sender) {
     setEditingId(s.id);
-    setEditForm({ label: s.label, from_name: s.from_name ?? "" });
+    setEditErr(null);
+    setEditForm({ label: s.label, from_name: s.from_name ?? "", send_as_email: s.send_as_email ?? "" });
   }
   async function saveEdit(id: string) {
     setEditSaving(true);
-    await fetch(`/api/senders/${id}`, {
+    setEditErr(null);
+    const r = await fetch(`/api/senders/${id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ label: editForm.label, from_name: editForm.from_name || null }),
+      body: JSON.stringify({
+        label: editForm.label,
+        from_name: editForm.from_name || null,
+        send_as_email: editForm.send_as_email.trim() || null,
+      }),
     });
     setEditSaving(false);
+    if (!r.ok) {
+      setEditErr("Couldn't save — check the send-as alias is a valid email address.");
+      return;
+    }
     setEditingId(null);
     await load();
   }
@@ -127,11 +207,12 @@ export default function SendersPage() {
         <PageHeader
           eyebrow="Workspace"
           title="Senders"
-          subtitle="The Gmail accounts authorized to send your campaigns. Reputation lives here, not on our infrastructure."
+          subtitle="The inboxes authorized to send your campaigns — Gmail or your own domain. Reputation lives here, not on our infrastructure."
           actions={
             !adding && (
               <>
-                <button className="btn-ghost" onClick={() => setAdding(true)}>Use app password</button>
+                <button className="btn-ghost" onClick={() => setAdding("smtp")}>Custom domain</button>
+                <button className="btn-ghost" onClick={() => setAdding("gmail")}>Use app password</button>
                 <button className="btn-accent" onClick={connectGoogle}>
                   <GoogleGlyph />
                   Connect Gmail
@@ -148,7 +229,44 @@ export default function SendersPage() {
             onSubmit={onAdd}
             className="rounded-xl border border-ink-200 bg-paper p-5 sm:p-6 mb-6"
           >
-            <h2 className="text-[16px] font-semibold tracking-[-0.01em] mb-1">Add sender · app password</h2>
+            <h2 className="text-[16px] font-semibold tracking-[-0.01em] mb-1">
+              {isSmtp ? "Add sender · custom domain" : "Add sender · app password"}
+            </h2>
+            {isSmtp ? (
+              <div className="mb-5">
+                <p className="text-[13px] text-ink-600 mb-4 leading-relaxed">
+                  Send from your own domain&rsquo;s mailbox over SMTP, and receive replies over IMAP.
+                  Set up SPF, DKIM and DMARC for the domain first or mail will land in spam.
+                </p>
+                <label className="label-cap">Mail provider</label>
+                <select
+                  className="field-boxed"
+                  value={form.preset}
+                  onChange={(e) => applyPreset(e.target.value)}
+                >
+                  {Object.entries(PRESETS).map(([k, p]) => (
+                    <option key={k} value={k}>{p.name}</option>
+                  ))}
+                </select>
+                {PRESETS[form.preset]?.hint && (
+                  <p className="text-[11.5px] text-ink-500 mt-1.5">{PRESETS[form.preset].hint}</p>
+                )}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                  <ServerFields
+                    title="Outgoing · SMTP"
+                    host={form.smtp_host} port={form.smtp_port} secure={form.smtp_secure}
+                    ports={[465, 587, 2525]}
+                    onChange={(v) => setForm({ ...form, preset: "other", smtp_host: v.host, smtp_port: v.port, smtp_secure: v.secure })}
+                  />
+                  <ServerFields
+                    title="Incoming · IMAP"
+                    host={form.imap_host} port={form.imap_port} secure={form.imap_secure}
+                    ports={[993, 143]}
+                    onChange={(v) => setForm({ ...form, preset: "other", imap_host: v.host, imap_port: v.port, imap_secure: v.secure })}
+                  />
+                </div>
+              </div>
+            ) : (
             <p className="text-[13px] text-ink-600 mb-5 leading-relaxed">
               Use an <b className="text-ink">app password</b>, not your Gmail login. Generate at{" "}
               <a
@@ -160,6 +278,7 @@ export default function SendersPage() {
                 myaccount.google.com/apppasswords
               </a>. 2FA must be on.
             </p>
+            )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
@@ -182,29 +301,40 @@ export default function SendersPage() {
                 />
               </div>
               <div>
-                <label className="label-cap">Gmail address</label>
+                <label className="label-cap">{isSmtp ? "Email address" : "Gmail address"}</label>
                 <input
                   className="field-boxed"
                   type="email"
-                  placeholder="you@gmail.com"
+                  placeholder={isSmtp ? "you@yourdomain.com" : "you@gmail.com"}
                   value={form.email}
                   onChange={(e) => setForm({ ...form, email: e.target.value })}
                   required
                 />
               </div>
               <div>
-                <label className="label-cap">App password</label>
+                <label className="label-cap">{isSmtp ? "Mailbox password" : "App password"}</label>
                 <input
                   className="field-boxed font-mono"
-                  placeholder="xxxx xxxx xxxx xxxx"
+                  type={isSmtp ? "password" : "text"}
+                  autoComplete={isSmtp ? "new-password" : "off"}
+                  placeholder={isSmtp ? "••••••••" : "xxxx xxxx xxxx xxxx"}
                   value={form.app_password}
                   onChange={(e) => setForm({ ...form, app_password: e.target.value })}
                   required
                 />
                 <p className="text-[11.5px] text-ink-500 mt-1.5">
-                  16 lowercase letters Google generates — not your login password.
+                  {isSmtp
+                    ? "The password for this mailbox. Stored encrypted."
+                    : "16 lowercase letters Google generates — not your login password."}
                 </p>
               </div>
+            </div>
+
+            <div className="mt-4">
+              <SendAsField
+                value={form.send_as_email}
+                onChange={(v) => setForm({ ...form, send_as_email: v })}
+              />
             </div>
 
             <div className="mt-5 space-y-2.5">
@@ -227,8 +357,8 @@ export default function SendersPage() {
                 <div>
                   <div>Enable 14-day warmup</div>
                   <div className="text-[11.5px] text-ink-500 mt-0.5 leading-relaxed">
-                    Ramps from 10/day up to 400/day over 14 days. Brand-new Gmail accounts get
-                    flagged fast without it.
+                    Ramps from 10/day up to 400/day over 14 days. Brand-new inboxes and domains
+                    get flagged fast without it.
                   </div>
                 </div>
               </label>
@@ -276,10 +406,11 @@ export default function SendersPage() {
               </svg>
             }
             title="No senders yet"
-            body="Connect a Gmail to start sending campaigns from your own inbox. Or use an app password if your org blocks OAuth."
+            body="Connect a Gmail to start sending campaigns from your own inbox, use an app password if your org blocks OAuth, or add a mailbox on your own domain."
             action={
               <div className="flex items-center gap-2 flex-wrap justify-center">
-                <button className="btn-ghost" onClick={() => setAdding(true)}>Use app password</button>
+                <button className="btn-ghost" onClick={() => setAdding("smtp")}>Custom domain</button>
+                <button className="btn-ghost" onClick={() => setAdding("gmail")}>Use app password</button>
                 <button className="btn-accent" onClick={connectGoogle}>
                   <GoogleGlyph />
                   Connect Gmail
@@ -318,6 +449,11 @@ export default function SendersPage() {
                         />
                       </div>
                     </div>
+                    <SendAsField
+                      value={editForm.send_as_email}
+                      onChange={(v) => setEditForm({ ...editForm, send_as_email: v })}
+                    />
+                    {editErr && <div className="text-[12px] text-[rgb(255_140_140)]">{editErr}</div>}
                     <div className="text-[12px] text-ink-500">
                       Email <span className="font-mono text-ink-700">{s.email}</span> can&rsquo;t be changed.
                       Delete and re-add to switch accounts.
@@ -371,8 +507,25 @@ function SenderRow({
   const w = warmupStatus(sender);
   const isOauth = sender.auth_method === "oauth";
   const isRevoked = isOauth && sender.oauth_status === "revoked";
+  const [dnsReport, setDnsReport] = useState<DnsReport | null>(null);
+  const [dnsOpen, setDnsOpen] = useState(false);
+  const [dnsBusy, setDnsBusy] = useState(false);
+
+  async function checkDns() {
+    if (dnsOpen && dnsReport) { setDnsOpen(false); return; }
+    setDnsOpen(true);
+    setDnsBusy(true);
+    try {
+      const r = await fetch(`/api/senders/${sender.id}/dns`, { cache: "no-store" });
+      const d = await r.json().catch(() => ({}));
+      setDnsReport(d.report ?? null);
+    } finally {
+      setDnsBusy(false);
+    }
+  }
 
   return (
+    <div>
     <div className="group flex items-center justify-between gap-4 px-4 sm:px-5 py-4 hover:bg-hover transition-colors">
       <div className="flex items-center gap-3 min-w-0 flex-1">
         {/* Avatar */}
@@ -404,6 +557,8 @@ function SenderRow({
             )}
             {isOauth ? (
               <Tag tone="ok">OAuth</Tag>
+            ) : sender.provider === "smtp" ? (
+              <Tag tone="ok">{sender.smtp_host ? `smtp · ${sender.smtp_host}` : "smtp"}</Tag>
             ) : (
               <Tag tone="warn">app pw</Tag>
             )}
@@ -420,6 +575,11 @@ function SenderRow({
               <span className="font-mono text-ink-500">{sender.email}</span>
             )}
           </div>
+          {sender.send_as_email && (
+            <div className="text-[12px] text-ink-500 truncate mt-0.5">
+              sends as <span className="font-mono text-ink-700">{sender.send_as_email}</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -429,6 +589,9 @@ function SenderRow({
             Reconnect
           </button>
         )}
+        <button className="btn-quiet text-[12.5px]" onClick={checkDns} title="Check SPF, DKIM and DMARC for this sender's domain">
+          {dnsOpen && dnsReport ? "Hide DNS" : "Check DNS"}
+        </button>
         <button className="btn-quiet text-[12.5px]" onClick={onEdit}>Edit</button>
         {!sender.is_default && (
           <button className="btn-quiet text-[12.5px]" onClick={onSetDefault}>
@@ -441,6 +604,115 @@ function SenderRow({
         >
           Delete
         </button>
+      </div>
+    </div>
+    {dnsOpen && (
+      <div className="px-4 sm:px-5 pb-4 -mt-1">
+        {dnsBusy ? (
+          <div className="text-[12.5px] text-ink-500">Checking DNS…</div>
+        ) : !dnsReport ? (
+          <div className="text-[12.5px] text-[rgb(252_165_165)]">Couldn&rsquo;t check DNS. Try again.</div>
+        ) : dnsReport.managed ? (
+          <div className="text-[12.5px] text-ink-500">
+            <span className="font-mono">{dnsReport.domain}</span> is a free-mail domain; authentication is handled by the provider.
+            Free inboxes have low limits (Gmail: 500/day) and weaker cold-email reputation. A custom domain on Google Workspace is better for outreach.
+          </div>
+        ) : (
+          <div className="rounded-lg border border-ink-200 divide-y divide-ink-100 text-[12.5px]">
+            <div className="px-3 py-2 flex items-center gap-2">
+              <span className="font-mono">{dnsReport.domain}</span>
+              <DnsTag status={dnsReport.score} />
+              {dnsReport.score === "fail" && (
+                <span className="text-ink-500">Gmail and Outlook may reject mail from this domain until this is fixed.</span>
+              )}
+            </div>
+            {([
+              ["SPF", dnsReport.spf.status, dnsReport.spf.note],
+              ["DKIM", dnsReport.dkim.status, dnsReport.dkim.note],
+              ["DMARC", dnsReport.dmarc.status, dnsReport.dmarc.note],
+              ["MX", dnsReport.mx.status, dnsReport.mx.hosts.length ? dnsReport.mx.hosts.slice(0, 2).join(", ") : "No MX records: replies to this domain can't be delivered."],
+            ] as const).map(([k, st, note]) => (
+              <div key={k} className="px-3 py-2 grid grid-cols-[56px,52px,1fr] gap-2 items-start">
+                <span className="font-medium">{k}</span>
+                <DnsTag status={st} />
+                <span className="text-ink-600 break-words">{note}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    )}
+    </div>
+  );
+}
+
+type DnsStatus = "pass" | "warn" | "fail";
+type DnsReport = {
+  domain: string;
+  managed: boolean;
+  score: DnsStatus;
+  mx: { status: DnsStatus; hosts: string[] };
+  spf: { status: DnsStatus; note: string };
+  dkim: { status: DnsStatus; note: string };
+  dmarc: { status: DnsStatus; note: string };
+};
+
+function DnsTag({ status }: { status: DnsStatus }) {
+  return <Tag tone={status === "pass" ? "ok" : status === "warn" ? "warn" : "bad"}>{status}</Tag>;
+}
+
+function SendAsField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <div>
+      <label className="label-cap">Send as (alias) · optional</label>
+      <input
+        className="field-boxed"
+        type="email"
+        placeholder="hello@yourdomain.com"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <p className="text-[11.5px] text-ink-500 mt-1.5 leading-relaxed">
+        Recipients see this address in From and Reply-To. Add it first in Gmail → Settings →
+        Accounts → &ldquo;Send mail as&rdquo;, or Gmail will send from the mailbox address instead.
+      </p>
+    </div>
+  );
+}
+
+function ServerFields({
+  title, host, port, secure, ports, onChange,
+}: {
+  title: string;
+  host: string;
+  port: number;
+  secure: boolean;
+  ports: number[];
+  onChange: (v: { host: string; port: number; secure: boolean }) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-ink-100 p-3 space-y-2.5">
+      <div className="label-cap">{title}</div>
+      <input
+        className="field-boxed font-mono"
+        placeholder="mail.example.com"
+        value={host}
+        onChange={(e) => onChange({ host: e.target.value, port, secure })}
+        required
+      />
+      <div className="flex items-center gap-3">
+        <select
+          className="field-boxed w-28"
+          value={port}
+          // Implicit-TLS ports (465/993) are secure; the others upgrade via STARTTLS.
+          onChange={(e) => {
+            const p = Number(e.target.value);
+            onChange({ host, port: p, secure: p === 465 || p === 993 });
+          }}
+        >
+          {ports.map((p) => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <span className="text-[11.5px] text-ink-500">{secure ? "SSL/TLS" : "STARTTLS"}</span>
       </div>
     </div>
   );

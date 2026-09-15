@@ -92,8 +92,11 @@ export async function variantBreakdown(
 
 // Auto-pick a winner: returns the id if the lead is statistically
 // material AND the volume threshold is hit. Conservative — only fires
-// when the leader's reply rate is at least 50% better than the runner-up
-// AND each variant has at least `threshold / variants` sends.
+// when the leader's reply rate is at least 50% better than the runner-up,
+// each variant has at least `threshold / variants` sends, AND a
+// two-proportion z-test says the gap is unlikely to be noise (p < 0.05,
+// one-sided). Cold-email reply rates are low (~3%), so without the test a
+// 3-vs-1 reply split would "win" on pure chance.
 export function pickAutoWinner(
   stats: VariantStat[],
   threshold: number
@@ -109,5 +112,34 @@ export function pickAutoWinner(
   const [first, second] = stats; // already sorted desc by reply_rate
   if (first.reply_rate <= 0) return null;
   if (first.reply_rate < second.reply_rate * 1.5) return null;
+  if (twoProportionZ(first.replied, first.sent, second.replied, second.sent) < 1.645) return null;
   return first.id;
+}
+
+export function twoProportionZ(x1: number, n1: number, x2: number, n2: number): number {
+  if (n1 <= 0 || n2 <= 0) return 0;
+  const p1 = x1 / n1;
+  const p2 = x2 / n2;
+  const p = (x1 + x2) / (n1 + n2);
+  const se = Math.sqrt(p * (1 - p) * (1 / n1 + 1 / n2));
+  return se > 0 ? (p1 - p2) / se : 0;
+}
+
+// Tick-side: once a campaign with an auto-pick threshold has enough data,
+// pin the winner so every remaining recipient gets it. Returns the id when
+// it pinned one. Conditional update, so concurrent ticks can't flip-flop.
+export async function maybeAutoPromoteWinner(
+  db: SupabaseClient,
+  campaign: { id: string; variants: unknown; ab_winner_id: string | null; ab_winner_threshold: number | null }
+): Promise<string | null> {
+  if (!isVariantArray(campaign.variants) || campaign.ab_winner_id || !campaign.ab_winner_threshold) return null;
+  const winner = pickAutoWinner(await variantBreakdown(db, campaign.id), campaign.ab_winner_threshold);
+  if (!winner) return null;
+  const { data } = await db
+    .from("campaigns")
+    .update({ ab_winner_id: winner })
+    .eq("id", campaign.id)
+    .is("ab_winner_id", null)
+    .select("id");
+  return data?.length ? winner : null;
 }

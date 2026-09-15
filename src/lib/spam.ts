@@ -42,8 +42,23 @@ export function spamCheck(subject: string, body: string): SpamReport {
     score += 10;
   }
 
-  const links = (body.match(/\[([^\]]+)\]\(([^)]+)\)/g) || []).length;
-  if (links > 6) { warnings.push(`${links} links — may trigger spam filters (keep <6)`); score += 10; }
+  // Cold email: links are the #1 filter trigger on a first touch, and replies
+  // drop sharply past ~100 words (Gong: 50–100 words; Instantly: <80).
+  const links =
+    (body.match(/\[([^\]]+)\]\(([^)]+)\)/g) || []).length +
+    (body.replace(/\[([^\]]+)\]\(([^)]+)\)/g, "").match(/https?:\/\/\S+/g) || []).length;
+  if (links > 2) { warnings.push(`${links} links. Cold emails with more than 1–2 links get filtered more often`); score += 12; }
+  const words = body
+    .replace(/\{\{[^}]*\}\}/g, "x")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1")
+    .split(/\s+/)
+    .filter(Boolean).length;
+  if (words > 150) { warnings.push(`${words} words. Replies drop sharply past ~100; aim for 50–100`); score += 10; }
+  else if (words > 110) { warnings.push(`${words} words. Aim for 50–100 for cold outreach`); score += 4; }
+  if (/!\[[^\]]*\]\([^)]+\)|<img\b/i.test(body)) {
+    warnings.push("Images in a cold email hurt inbox placement; send plain text");
+    score += 10;
+  }
 
   if (subject.length > 100) { warnings.push("Subject is unusually long"); score += 5; }
   if (subject.length < 4) { warnings.push("Subject is suspiciously short / blank"); score += 10; }

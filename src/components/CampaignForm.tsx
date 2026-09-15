@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { render, toHtml, extractTags } from "@/lib/template";
+import { render, spin, toHtml, extractTags } from "@/lib/template";
 import { DEFAULT_SCHEDULE, type Schedule } from "@/lib/supabase";
 import ScheduleEditor from "@/components/ScheduleEditor";
 import { spamCheck, spamLevel } from "@/lib/spam";
@@ -19,8 +19,10 @@ type FollowUpCondition =
   | { type: "intent_in"; intents: string[] }
   | { type: "intent_not_in"; intents: string[] };
 type FollowUpStep = {
+  id?: string;
   step_number: number;
   delay_days: number;
+  delay_unit?: "days" | "business_days";
   subject: string | null;
   template: string;
   condition?: FollowUpCondition | null;
@@ -47,7 +49,20 @@ export type CampaignInitial = {
   attachment_filenames?: string[];
   known_vars: string[];
   start_at: string | null;
+  timezone?: string;
+  stop_on_domain_reply?: boolean;
+  variants?: Array<{ id: string; weight?: number; subject: string; template: string }> | null;
+  ab_winner_threshold?: number | null;
 };
+
+type ExtraVariant = { id: string; subject: string; template: string };
+
+// Fallback when Intl.supportedValuesOf isn't available (older Safari).
+const COMMON_TIMEZONES = [
+  "Asia/Kolkata", "UTC", "Europe/London", "Europe/Berlin", "Europe/Paris",
+  "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles",
+  "America/Sao_Paulo", "Asia/Dubai", "Asia/Singapore", "Asia/Tokyo", "Australia/Sydney",
+];
 
 export default function CampaignForm({
   mode,
@@ -90,6 +105,21 @@ export default function CampaignForm({
   const [schedule, setSchedule] = useState<Schedule>(initial?.schedule ?? DEFAULT_SCHEDULE);
   const [dailyCap, setDailyCap] = useState(initial?.daily_cap ?? 300);
   const [gapSeconds, setGapSeconds] = useState(initial?.gap_seconds ?? 120);
+  // Schedule windows and business-day follow-ups are evaluated in this zone.
+  const [timezone, setTimezone] = useState(initial?.timezone ?? "Asia/Kolkata");
+  useEffect(() => {
+    // New campaigns default to the browser's zone (after mount, so the
+    // server-rendered markup matches the first client render).
+    if (initial?.timezone) return;
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (tz) setTimezone(tz);
+  }, [initial?.timezone]);
+  const timezoneOptions = useMemo(() => {
+    const intl = Intl as unknown as { supportedValuesOf?: (k: string) => string[] };
+    const all = intl.supportedValuesOf ? intl.supportedValuesOf("timeZone") : COMMON_TIMEZONES;
+    return all.includes(timezone) ? all : [timezone, ...all];
+  }, [timezone]);
+  const [stopOnDomainReply, setStopOnDomainReply] = useState(initial?.stop_on_domain_reply ?? true);
   const [showAutopilot, setShowAutopilot] = useState(false);
 
   // ---------- feature toggles ----------
@@ -97,8 +127,14 @@ export default function CampaignForm({
   const [retryEnabled, setRetryEnabled] = useState(initial?.retry_enabled ?? false);
   const [maxRetries, setMaxRetries] = useState(initial?.max_retries ?? 2);
   const [trackingEnabled, setTrackingEnabled] = useState(initial?.tracking_enabled ?? trackingDefault);
-  const [unsubEnabled, setUnsubEnabled] = useState(initial?.unsubscribe_enabled ?? false);
+  const [unsubEnabled, setUnsubEnabled] = useState(initial?.unsubscribe_enabled ?? true);
   const [strictMerge, setStrictMerge] = useState(initial?.strict_merge ?? true);
+  // A/B test: the main subject + body above is variant A; these are B..D.
+  const [abEnabled, setAbEnabled] = useState((initial?.variants?.length ?? 0) >= 2);
+  const [extraVariants, setExtraVariants] = useState<ExtraVariant[]>(
+    (initial?.variants ?? []).filter((v) => v.id !== "A").map((v) => ({ id: v.id, subject: v.subject, template: v.template }))
+  );
+  const [abThreshold, setAbThreshold] = useState<number | null>(initial?.ab_winner_threshold ?? 200);
   const [startAt, setStartAt] = useState<string>(() => {
     if (!initial?.start_at) return "";
     const d = new Date(initial.start_at);
@@ -233,9 +269,32 @@ export default function CampaignForm({
 
   function addStep() {
     const n = steps.length + 1;
+    // Default cadence (business days after the previous email): 3 → 4 → 7.
+    // Replies cluster in the first follow-ups; later ones widen out.
+    const delay = n === 1 ? 3 : n === 2 ? 4 : 7;
     setSteps([
       ...steps,
-      { step_number: n, delay_days: 4, subject: null, template: `Hi {{Name}},\n\nJust a quick bump on my note from last week — did you get a chance to take a look?\n\nThanks,\n` },
+      { step_number: n, delay_days: delay, delay_unit: "business_days", subject: null, template: `Hi {{Name}},\n\nJust a quick bump on my note from last week — did you get a chance to take a look?\n\nThanks,\n` },
+    ]);
+  }
+
+  // Benchmark-backed starter: 3 short follow-ups on business days (3 → 4 → 7),
+  // each adding something rather than guilt-tripping ("did you see my
+  // email?" lifts replies but cuts booked meetings).
+  function applyRecommendedSequence() {
+    setSteps([
+      {
+        step_number: 1, delay_days: 3, delay_unit: "business_days", subject: null,
+        template: `Hi {{Name | there}},\n\nFloating this back to the top of your inbox. Is this something {{Company | your team}} is looking at this quarter, or not a priority right now?\n\nEither answer helps.\n`,
+      },
+      {
+        step_number: 2, delay_days: 4, delay_unit: "business_days", subject: null,
+        template: `Hi {{Name | there}},\n\nOne thing I should have mentioned: [one-line result you got for a similar company].\n\nWorth a 15-minute look?\n`,
+      },
+      {
+        step_number: 3, delay_days: 7, delay_unit: "business_days", subject: null,
+        template: `Hi {{Name | there}},\n\nI'll stop here so I'm not cluttering your inbox. If this becomes relevant later, just reply to this thread and I'll pick it up.\n`,
+      },
     ]);
   }
 
@@ -243,6 +302,8 @@ export default function CampaignForm({
     const next = steps.filter((_, i) => i !== idx).map((s, i) => ({ ...s, step_number: i + 1 }));
     setSteps(next);
   }
+
+  const [previewStep, setPreviewStep] = useState<number | null>(null);
 
   function updateStep(idx: number, patch: Partial<FollowUpStep>) {
     setSteps(steps.map((s, i) => (i === idx ? { ...s, ...patch } : s)));
@@ -310,7 +371,7 @@ export default function CampaignForm({
     }
   }
 
-  async function sendTestEmail() {
+  async function sendTestEmail(opts: { withFollowUps?: boolean } = {}) {
     setTestMsg(null);
     if (!testEmail) { setTestMsg("Enter an email to send the test to."); return; }
     if (!senderId) { setTestMsg("Pick a sender first."); return; }
@@ -325,6 +386,10 @@ export default function CampaignForm({
       fd.append("template", template);
       fd.append("sender_id", senderId);
       fd.append("vars", JSON.stringify(sampleVars));
+      const testSteps = opts.withFollowUps && followUpsEnabled
+        ? steps.filter((st) => st.template.trim()).map((st) => ({ subject: st.subject, template: st.template }))
+        : [];
+      if (testSteps.length > 0) fd.append("steps", JSON.stringify(testSteps));
       if (initial?.id) fd.append("campaign_id", initial.id);
       for (const f of pendingAttachments) fd.append("file", f);
 
@@ -334,7 +399,12 @@ export default function CampaignForm({
       } else {
         const d = await r.json().catch(() => ({}));
         const n = d?.attached ?? 0;
-        setTestMsg(`Sent to ${testEmail}${n > 0 ? ` with ${n} attachment${n === 1 ? "" : "s"}` : ""} ✓`);
+        const fu = d?.follow_ups_sent ?? 0;
+        setTestMsg(
+          `Sent to ${testEmail}${n > 0 ? ` with ${n} attachment${n === 1 ? "" : "s"}` : ""}` +
+            (fu > 0 ? ` + ${fu} follow-up${fu === 1 ? "" : "s"} in the same thread` : "") +
+            " ✓"
+        );
       }
     } catch (e) {
       setTestMsg(e instanceof Error ? e.message : String(e));
@@ -354,14 +424,35 @@ export default function CampaignForm({
       schedule,
       daily_cap: dailyCap,
       gap_seconds: gapSeconds,
+      timezone,
+      stop_on_domain_reply: stopOnDomainReply,
       follow_ups_enabled: followUpsEnabled,
       retry_enabled: retryEnabled,
       max_retries: maxRetries,
       tracking_enabled: trackingEnabled,
       unsubscribe_enabled: unsubEnabled,
       strict_merge: strictMerge,
+      // Variant A always mirrors the main subject/body so there's one place
+      // to edit it. Turning the test off clears variants (null).
+      variants:
+        abEnabled && extraVariants.length > 0
+          ? [
+              { id: "A", weight: 1, subject, template },
+              ...extraVariants.map((v) => ({ id: v.id, weight: 1, subject: v.subject, template: v.template })),
+            ]
+          : null,
+      ab_winner_threshold: abEnabled && extraVariants.length > 0 ? abThreshold : null,
       start_at: startAt ? new Date(startAt).toISOString() : null,
     };
+
+    if (abEnabled && extraVariants.some((v) => !v.subject.trim() || !v.template.trim())) {
+      setErr("Every A/B variant needs a subject and a body.");
+      return;
+    }
+    if (followUpsEnabled && steps.some((st) => /\[one-line result/.test(st.template))) {
+      setErr("Follow-up step 2 still has the [bracketed] placeholder. Replace it with your own line first.");
+      return;
+    }
 
     if (mode === "new") {
       if (sourceTab === "sheets" && (!sheetUrl || !sheetName)) { setErr("Pick a Google Sheet and a tab."); return; }
@@ -452,7 +543,7 @@ export default function CampaignForm({
     ? { ...currentSample.vars, Name: currentSample.name, Company: currentSample.company }
     : { Name: "John", Company: "Acme Inc" };
   const previewHtml = useMemo(
-    () => toHtml(render(template, previewVars)),
+    () => toHtml(render(spin(template, currentSample?.email ?? "preview"), previewVars)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [template, JSON.stringify(previewVars)]
   );
@@ -742,8 +833,107 @@ export default function CampaignForm({
               </div>
             )}
             <p className="kicker text-ink-400 normal-case tracking-normal">
-              <code className="font-mono">{"{{ColumnName}}"}</code> for any column. Markdown links <code className="font-mono">[text](url)</code> become real hyperlinks.
+              <code className="font-mono">{"{{ColumnName}}"}</code> for any column, <code className="font-mono">{"{{First Name | there}}"}</code> for a fallback when it&rsquo;s blank, <code className="font-mono">{"{Hi|Hey|Hello}"}</code> to vary wording per recipient. Markdown links <code className="font-mono">[text](url)</code> become real hyperlinks.
             </p>
+          </section>
+
+          {/* --- A/B test --- */}
+          <section className={`sheet ${abEnabled ? "p-6" : "p-4"}`}>
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                className="w-4 h-4 accent-accent"
+                checked={abEnabled}
+                onChange={(e) => {
+                  setAbEnabled(e.target.checked);
+                  if (e.target.checked && extraVariants.length === 0) {
+                    setExtraVariants([{ id: "B", subject, template }]);
+                  }
+                }}
+              />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[15px] font-semibold">A/B test</span>
+                  {abEnabled ? <span className="pill-live">on</span> : <span className="pill-draft">off</span>}
+                  <span className="text-[12px] text-ink-500">Growth &amp; Scale · winner picked by reply rate</span>
+                </div>
+              </div>
+            </label>
+
+            {abEnabled && (
+              <div className="rule pt-6 space-y-5">
+                <p className="text-[12.5px] text-ink-500">
+                  <b className="text-ink">Variant A</b> is the subject and body above. Each recipient gets one
+                  variant at random, and follow-ups stay the same for everyone.
+                </p>
+                {extraVariants.map((v, i) => (
+                  <div key={v.id} className="border border-ink-200 p-5">
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="font-display text-xl font-medium">Variant {v.id}</span>
+                      <button
+                        type="button"
+                        className="btn-quiet text-xs text-[rgb(252_165_165)] hover:text-[rgb(255_140_140)]"
+                        onClick={() => setExtraVariants(extraVariants.filter((_, j) => j !== i))}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                    <label className="label-cap">Subject line</label>
+                    <input
+                      className="field-boxed mb-3"
+                      value={v.subject}
+                      onChange={(e) => setExtraVariants(extraVariants.map((x, j) => (j === i ? { ...x, subject: e.target.value } : x)))}
+                    />
+                    <label className="label-cap">Body</label>
+                    <BodyEditor
+                      value={v.template}
+                      onChange={(t) => setExtraVariants((prev) => prev.map((x, j) => (j === i ? { ...x, template: t } : x)))}
+                      placeholder="Hi {{Name}}, …"
+                      minHeight={200}
+                    />
+                  </div>
+                ))}
+                <div className="flex flex-wrap items-center gap-3">
+                  {extraVariants.length < 3 && (
+                    <button
+                      type="button"
+                      className="btn-ghost text-xs"
+                      onClick={() => {
+                        const used = new Set(["A", ...extraVariants.map((x) => x.id)]);
+                        const id = ["B", "C", "D"].find((l) => !used.has(l))!;
+                        setExtraVariants([...extraVariants, { id, subject, template }]);
+                      }}
+                    >
+                      + Add variant
+                    </button>
+                  )}
+                  <label className="flex items-center gap-2 text-[12.5px] text-ink-600">
+                    <input
+                      type="checkbox"
+                      className="w-4 h-4 accent-accent"
+                      checked={abThreshold !== null}
+                      onChange={(e) => setAbThreshold(e.target.checked ? 200 : null)}
+                    />
+                    Automatically switch to the winner after
+                    <input
+                      type="number"
+                      min={50}
+                      max={10000}
+                      step={50}
+                      className="field w-20"
+                      disabled={abThreshold === null}
+                      value={abThreshold ?? 200}
+                      onChange={(e) => setAbThreshold(Math.max(50, Number(e.target.value) || 200))}
+                    />
+                    sends
+                  </label>
+                </div>
+                <p className="text-[12px] text-ink-500">
+                  The winner needs a clearly higher reply rate (at least 1.5× and statistically significant). Until
+                  then every variant keeps getting its share; you can also pin one by hand on the campaign page.
+                </p>
+              </div>
+            )}
           </section>
 
           {/* --- follow-ups --- */}
@@ -772,6 +962,20 @@ export default function CampaignForm({
 
             {followUpsEnabled && (
               <div className="rule pt-6 space-y-5">
+                <label className="flex items-start gap-2 text-[13px] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="w-4 h-4 mt-0.5 accent-accent"
+                    checked={stopOnDomainReply}
+                    onChange={(e) => setStopOnDomainReply(e.target.checked)}
+                  />
+                  <span>
+                    <span className="font-medium">Stop the whole company when one person replies</span>
+                    <span className="block text-[12px] text-ink-500 mt-0.5">
+                      A reply from anyone at acme.com stops follow-ups (and unsent first emails) to everyone else at acme.com in this campaign. Gmail, Outlook and other free-mail addresses are never grouped.
+                    </span>
+                  </span>
+                </label>
                 {steps.length === 0 && (
                   <p className="text-sm text-ink-500">No follow-ups yet. Add at least one.</p>
                 )}
@@ -782,26 +986,57 @@ export default function CampaignForm({
                         <span className="font-display text-2xl font-medium">№{String(s.step_number).padStart(2, "0")}</span>
                         <span className="kicker">Follow-up {s.step_number}</span>
                       </div>
-                      <button
-                        type="button"
-                        className="btn-quiet text-xs text-[rgb(252_165_165)] hover:text-[rgb(255_140_140)]"
-                        onClick={() => removeStep(i)}
-                      >
-                        Remove
-                      </button>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          className="btn-quiet text-xs"
+                          onClick={() => setPreviewStep(previewStep === i ? null : i)}
+                        >
+                          {previewStep === i ? "Hide preview" : "Preview"}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-quiet text-xs text-[rgb(252_165_165)] hover:text-[rgb(255_140_140)]"
+                          onClick={() => removeStep(i)}
+                        >
+                          Remove
+                        </button>
+                      </div>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-[120px,1fr] gap-x-6 gap-y-4">
                       <div>
                         <label className="label-cap">Delay</label>
                         <div className="flex items-center gap-2">
                           <input type="number" min={0.5} step={0.5} className="field w-20" value={s.delay_days} onChange={(e) => updateStep(i, { delay_days: Number(e.target.value) || 1 })} />
-                          <span className="text-sm text-ink-500">days</span>
+                          <select
+                            className="field-boxed text-[12px]"
+                            value={s.delay_unit ?? "days"}
+                            onChange={(e) => updateStep(i, { delay_unit: e.target.value as "days" | "business_days" })}
+                            aria-label="Delay unit"
+                          >
+                            <option value="days">days</option>
+                            <option value="business_days">business days</option>
+                          </select>
                         </div>
                       </div>
                       <div>
                         <label className="label-cap">Subject override (optional)</label>
                         <input className="field" placeholder="leave blank to reuse original" value={s.subject ?? ""} onChange={(e) => updateStep(i, { subject: e.target.value || null })} />
                       </div>
+                      {previewStep === i && (
+                        <div className="md:col-span-2 border border-ink-200 rounded-lg p-4 bg-surface">
+                          <div className="text-[11px] text-ink-500 mb-1">
+                            {currentSample ? `As ${currentSample.email} will see it` : "With sample values"} · threaded under your first email
+                          </div>
+                          <div className="text-[13px] font-medium mb-3">
+                            Re: {render(spin((s.subject || subject).replace(/^re:\s*/i, ""), `${currentSample?.email ?? "preview"}:subject`), previewVars)}
+                          </div>
+                          <div
+                            className="text-[13px]"
+                            dangerouslySetInnerHTML={{ __html: toHtml(render(spin(s.template, currentSample?.email ?? "preview"), previewVars)) }}
+                          />
+                        </div>
+                      )}
                       <div className="md:col-span-2">
                         <label className="label-cap">Body</label>
                         <BodyEditor
@@ -862,7 +1097,19 @@ export default function CampaignForm({
                     </div>
                   </div>
                 ))}
-                <button type="button" onClick={addStep} className="btn-ghost text-xs">+ Add follow-up step</button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" onClick={addStep} className="btn-ghost text-xs">+ Add follow-up step</button>
+                  {steps.length === 0 && (
+                    <button type="button" onClick={applyRecommendedSequence} className="btn-quiet text-xs">
+                      Use proven 3-step sequence
+                    </button>
+                  )}
+                </div>
+                {steps.some((st) => /\[one-line result/.test(st.template)) && (
+                  <p className="text-[12px] text-[rgb(255_180_110)]">
+                    Replace the [bracketed] placeholder in step 2 before sending.
+                  </p>
+                )}
               </div>
             )}
           </section>
@@ -880,9 +1127,20 @@ export default function CampaignForm({
               value={testEmail}
               onChange={(e) => setTestEmail(e.target.value)}
             />
-            <button type="button" onClick={sendTestEmail} disabled={testBusy} className="btn-ghost w-full mt-2 text-[13px]">
+            <button type="button" onClick={() => sendTestEmail()} disabled={testBusy} className="btn-ghost w-full mt-2 text-[13px]">
               {testBusy ? "Sending…" : "Send test"}
             </button>
+            {followUpsEnabled && steps.length > 0 && (
+              <button
+                type="button"
+                onClick={() => sendTestEmail({ withFollowUps: true })}
+                disabled={testBusy}
+                className="btn-quiet w-full mt-1 text-[12.5px]"
+                title="Sends the first email and every follow-up now, threaded, so you can check the whole sequence"
+              >
+                Test whole sequence ({steps.length + 1} emails)
+              </button>
+            )}
             {testMsg && (
               <p
                 className="text-[12.5px] mt-2"
@@ -918,6 +1176,7 @@ export default function CampaignForm({
                   </span>
                 </dd>
               </div>
+              <div className="flex justify-between gap-3"><dt className="text-ink-500">Timezone</dt><dd className="font-medium truncate">{timezone.replace(/_/g, " ")}</dd></div>
               <div className="flex justify-between"><dt className="text-ink-500">Active days</dt><dd className="font-medium">{enabledDayCount} / 7</dd></div>
               <div className="flex justify-between"><dt className="text-ink-500">Gap</dt><dd className="font-medium">{(gapSeconds / 60).toFixed(1)} min</dd></div>
               <div className="flex justify-between"><dt className="text-ink-500">Max/day</dt><dd className="font-medium">{dailyCap}</dd></div>
@@ -1134,6 +1393,22 @@ export default function CampaignForm({
               <button type="button" onClick={() => setShowAutopilot(false)} className="btn-quiet p-2">
                 <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 6l12 12M6 18L18 6" strokeLinecap="round"/></svg>
               </button>
+            </div>
+            <div className="mb-6">
+              <label className="label-cap" htmlFor="campaign-timezone">Timezone</label>
+              <select
+                id="campaign-timezone"
+                className="field-boxed text-[13px] w-full max-w-sm"
+                value={timezone}
+                onChange={(e) => setTimezone(e.target.value)}
+              >
+                {timezoneOptions.map((tz) => (
+                  <option key={tz} value={tz}>{tz.replace(/_/g, " ")}</option>
+                ))}
+              </select>
+              <p className="text-[12px] text-ink-500 mt-1">
+                Send windows, daily caps and business-day follow-ups use this timezone. Pick your recipients&rsquo; zone.
+              </p>
             </div>
             <ScheduleEditor
               schedule={schedule}

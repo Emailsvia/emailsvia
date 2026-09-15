@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { supabaseUser } from "@/lib/supabase-server";
 import { getUser } from "@/lib/auth-server";
+import { isValidTimeZone } from "@/lib/time";
+import { getPlan, hasFeature } from "@/lib/billing";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,7 +29,10 @@ const CreateSchema = z.object({
   gap_seconds: z.number().int().min(30).max(3600).optional(),
   window_start_hour: z.number().int().min(0).max(23).optional(),
   window_end_hour: z.number().int().min(1).max(24).optional(),
-  timezone: z.string().optional(),
+  // Must be a real IANA zone: tick feeds it straight into Intl, which throws
+  // on garbage and would stall every campaign behind this one.
+  timezone: z.string().refine(isValidTimeZone, "invalid timezone").optional(),
+  stop_on_domain_reply: z.boolean().optional(),
   follow_ups_enabled: z.boolean().optional(),
   retry_enabled: z.boolean().optional(),
   max_retries: z.number().int().min(1).max(5).optional(),
@@ -84,6 +89,12 @@ export async function POST(req: NextRequest) {
   const parsed = CreateSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: parsed.error.format() }, { status: 400 });
   const db = await supabaseUser();
+  if (parsed.data.variants && parsed.data.variants.length > 0) {
+    const plan = await getPlan(db, u.id);
+    if (!hasFeature(plan, "a_b_testing")) {
+      return NextResponse.json({ error: "A/B testing is available on Growth and Scale." }, { status: 402 });
+    }
+  }
   const { data, error } = await db.from("campaigns").insert({ ...parsed.data, user_id: u.id }).select().single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ campaign: data });

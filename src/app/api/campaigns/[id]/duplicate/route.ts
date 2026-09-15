@@ -52,6 +52,8 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       delay_days: s.delay_days,
       subject: s.subject,
       template: s.template,
+      condition: s.condition ?? null,
+      delay_unit: s.delay_unit ?? "days",
     }));
     await db.from("follow_up_steps").insert(cloneSteps);
   }

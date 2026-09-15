@@ -4,9 +4,9 @@ import type { ReplyIntent } from "./triage";
 
 // Conditional follow-up steps. Each follow_up_steps row may carry a
 // `condition` JSON describing when it should fire. Tick evaluates this
-// against the recipient's most recent reply (if any) before scheduling
-// next_follow_up_at. Steps whose condition fails are skipped over —
-// we look forward for the next eligible step.
+// against the recipient's reply state at SEND time (when the step is due),
+// not when the previous email went out. Steps whose condition fails are
+// skipped over — we look forward for the next eligible step.
 
 export type Condition =
   | { type: "always" }
@@ -26,9 +26,9 @@ export function isCondition(v: unknown): v is Condition {
 }
 
 export type RecipientReplyContext = {
-  // Pulled once before evaluation; if the recipient has no replies the
-  // values are null. We pull only the most recent reply — earlier ones
-  // would only matter for compound conditions which aren't supported in v1.
+  // Pulled once before evaluation. `hasReplied` ignores auto-replies (an
+  // out-of-office isn't a human answer); `lastIntent` is the most recent
+  // labelled reply of any kind, so `intent_in: ["ooo"]` can match.
   hasReplied: boolean;
   lastIntent: ReplyIntent | null;
 };
@@ -42,14 +42,15 @@ export async function fetchReplyContext(
 ): Promise<RecipientReplyContext> {
   const { data } = await db
     .from("replies")
-    .select("intent")
+    .select("intent, is_auto_reply")
     .eq("recipient_id", recipientId)
     .order("received_at", { ascending: false, nullsFirst: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(20);
+  const rows = data ?? [];
+  const labelled = rows.find((r) => r.intent);
   return {
-    hasReplied: !!data,
-    lastIntent: (data?.intent as ReplyIntent | null) ?? null,
+    hasReplied: rows.some((r) => !r.is_auto_reply),
+    lastIntent: (labelled?.intent as ReplyIntent | undefined) ?? null,
   };
 }
 
@@ -78,6 +79,7 @@ export function evaluate(
 export type FollowUpStep = {
   step_number: number;
   delay_days: number;
+  delay_unit?: "days" | "business_days" | null;
   subject: string | null;
   template: string;
   condition: Condition | null;
@@ -102,4 +104,46 @@ export function nextEligibleStep(
     }
   }
   return null;
+}
+
+// Resolve which step to send for a recipient whose follow-up is due.
+// `dueStep` is recipients.next_step_number (or follow_up_count+1 for legacy
+// rows). If that step's condition fails now, walk forward:
+//   - { kind: "send", step }                 send this step now
+//   - { kind: "defer", step, delaySteps }    a later step is eligible; it is
+//     due after the delays of `delaySteps` (the steps after the skipped one,
+//     up to and including the eligible step) have elapsed from now
+//   - { kind: "end" }                        nothing left to send
+export function resolveDueStep(
+  steps: FollowUpStep[],
+  dueStep: number,
+  ctx: RecipientReplyContext
+):
+  | { kind: "send"; step: FollowUpStep }
+  | { kind: "defer"; step: FollowUpStep; delaySteps: FollowUpStep[] }
+  | { kind: "end" } {
+  const remaining = steps
+    .filter((s) => s.step_number >= dueStep)
+    .sort((a, b) => a.step_number - b.step_number);
+  if (remaining.length === 0) return { kind: "end" };
+  for (let i = 0; i < remaining.length; i++) {
+    const s = remaining[i];
+    if (evaluate(s.condition, ctx)) {
+      // The first remaining step's delay has already elapsed.
+      return i === 0
+        ? { kind: "send", step: s }
+        : { kind: "defer", step: s, delaySteps: remaining.slice(1, i + 1) };
+    }
+  }
+  return { kind: "end" };
+}
+
+// The step that follows `stepNumber` in sequence order, or null at the end.
+// Conditions are NOT checked here — they're evaluated when it comes due.
+export function stepAfter(steps: FollowUpStep[], stepNumber: number): FollowUpStep | null {
+  return (
+    steps
+      .filter((s) => s.step_number > stepNumber)
+      .sort((a, b) => a.step_number - b.step_number)[0] ?? null
+  );
 }

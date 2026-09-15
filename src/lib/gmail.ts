@@ -15,6 +15,9 @@ export type GmailOAuthCreds = {
   accessToken?: string | null;
   expiresAt?: Date | null;
   fromName?: string | null;
+  // Workspace/Gmail "Send mail as" alias used in From + Reply-To. Must be
+  // configured in Gmail first, else Gmail rewrites From back to `email`.
+  sendAs?: string | null;
 };
 
 // All Gmail scopes the app ever requests. Bundled here so the connect route
@@ -98,16 +101,17 @@ async function buildRawMessage(args: {
   attachments?: { filename: string; content: Buffer; contentType?: string }[];
   headers?: Record<string, string>;
 }): Promise<string> {
+  const fromAddr = args.sender.sendAs || args.sender.email;
   const fromHeader = args.sender.fromName
-    ? `"${args.sender.fromName}" <${args.sender.email}>`
-    : args.sender.email;
+    ? `"${args.sender.fromName}" <${fromAddr}>`
+    : fromAddr;
   const composer = new MailComposer({
     from: fromHeader,
     to: args.to,
     subject: args.subject,
     text: args.text,
     html: args.html,
-    replyTo: args.sender.email,
+    replyTo: fromAddr,
     attachments: args.attachments,
     headers: args.headers,
   });
@@ -140,6 +144,7 @@ export async function sendViaGmailApi(args: {
   sender: GmailOAuthCreds;
   attachments?: { filename: string; content: Buffer; contentType?: string }[];
   headers?: Record<string, string>;
+  threadId?: string | null;
 }): Promise<SendResult> {
   const fresh = await ensureFreshAccessToken({
     refreshToken: args.sender.refreshToken,
@@ -151,7 +156,9 @@ export async function sendViaGmailApi(args: {
   const raw = await buildRawMessage(args);
   const sendRes = await gmail.users.messages.send({
     userId: "me",
-    requestBody: { raw },
+    // threadId keeps follow-ups in the sender's original Gmail thread even
+    // when the subject changes; In-Reply-To/References handle the recipient.
+    requestBody: { raw, ...(args.threadId ? { threadId: args.threadId } : {}) },
   });
   const gmailId = sendRes.data.id ?? "";
   const threadId = sendRes.data.threadId ?? "";
@@ -250,60 +257,8 @@ export async function listInboxSince(
   async function worker() {
     while (cursor < ids.length) {
       const i = cursor++;
-      const id = ids[i];
-      try {
-        const msg = await gmail.users.messages.get({
-          userId: "me",
-          id,
-          format: "raw",
-        });
-        const rawB64 = msg.data.raw;
-        if (!rawB64) continue;
-        // Gmail returns URL-safe base64 with no padding — convert before parsing.
-        const buf = Buffer.from(rawB64.replace(/-/g, "+").replace(/_/g, "/"), "base64");
-        const parsed = await simpleParser(buf);
-        const fromAddr =
-          parsed.from?.value?.[0]?.address?.toLowerCase() ?? null;
-        if (!fromAddr) continue;
-
-        const subject = parsed.subject ?? null;
-        const bodyText = parsed.text ?? null;
-        const bodyHtml = typeof parsed.html === "string" ? parsed.html : null;
-        const snippet = bodyText
-          ? bodyText.replace(/\s+/g, " ").trim().slice(0, 200)
-          : null;
-
-        const inReplyTo = normalizeMsgId(
-          typeof parsed.inReplyTo === "string" ? parsed.inReplyTo : null
-        );
-        let references: string[] = [];
-        if (Array.isArray(parsed.references)) {
-          references = parsed.references
-            .map((r) => normalizeMsgId(r))
-            .filter((x): x is string => !!x);
-        } else if (typeof parsed.references === "string") {
-          references = parsed.references
-            .split(/\s+/)
-            .map((r) => normalizeMsgId(r))
-            .filter((x): x is string => !!x);
-        }
-
-        out.push({
-          from: fromAddr,
-          subject,
-          snippet,
-          body_text: bodyText,
-          body_html: bodyHtml,
-          date: parsed.date ?? null,
-          in_reply_to: inReplyTo,
-          references,
-          is_auto_reply: detectAutoReply(parsed.headers, subject, fromAddr),
-          is_bounce: detectBounce(parsed.headers, subject, fromAddr),
-        });
-      } catch {
-        // Skip messages we can't parse — Gmail occasionally returns 404 for
-        // mid-flight deletions. We still want to make progress on the rest.
-      }
+      const parsed = await fetchParsedMessage(gmail, ids[i]);
+      if (parsed) out.push(parsed);
     }
   }
   await Promise.all(Array.from({ length: CONC }, () => worker()));
@@ -314,6 +269,111 @@ export async function listInboxSince(
       ? { accessToken: fresh.accessToken, expiresAt: fresh.expiresAt }
       : null,
   };
+}
+
+// Pre-send guard for follow-ups: everything that arrived for ONE recipient
+// since `since` — mail from their address, plus delivery-failure notices that
+// mention it. Searches spam too (a reply that landed in spam is still a
+// reply). Throws on API failure so the caller can fail closed.
+export async function listRecipientInboundSince(
+  sender: GmailOAuthCreds,
+  recipientEmail: string,
+  since: Date
+): Promise<{ messages: IncomingMessage[]; tokensRefreshed: RefreshResult | null }> {
+  const fresh = await ensureFreshAccessToken({
+    refreshToken: sender.refreshToken,
+    accessToken: sender.accessToken,
+    expiresAt: sender.expiresAt,
+  });
+  const gmail = gmailClient(fresh.accessToken, sender.refreshToken);
+  const addr = recipientEmail.replace(/["\s{}()]/g, "");
+  const afterSec = Math.floor(since.getTime() / 1000);
+  const q = `after:${afterSec} -in:sent {from:${addr} (from:(mailer-daemon OR postmaster) "${addr}")}`;
+  const res = await gmail.users.messages.list({
+    userId: "me",
+    q,
+    maxResults: 10,
+    includeSpamTrash: true,
+  });
+  const out: IncomingMessage[] = [];
+  for (const m of res.data.messages ?? []) {
+    if (!m.id) continue;
+    // strict: a message we know exists but couldn't load (rate limit, blip)
+    // must fail the whole check, not silently count as "no reply".
+    const parsed = await fetchParsedMessage(gmail, m.id, { strict: true });
+    if (parsed) out.push(parsed);
+  }
+  return {
+    messages: out,
+    tokensRefreshed: fresh.refreshed
+      ? { accessToken: fresh.accessToken, expiresAt: fresh.expiresAt }
+      : null,
+  };
+}
+
+async function fetchParsedMessage(
+  gmail: ReturnType<typeof gmailClient>,
+  id: string,
+  opts: { strict?: boolean } = {}
+): Promise<IncomingMessage | null> {
+  try {
+    const msg = await gmail.users.messages.get({
+      userId: "me",
+      id,
+      format: "raw",
+    });
+    const rawB64 = msg.data.raw;
+    if (!rawB64) return null;
+    // Gmail returns URL-safe base64 with no padding — convert before parsing.
+    const buf = Buffer.from(rawB64.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+    const parsed = await simpleParser(buf);
+    const fromAddr =
+      parsed.from?.value?.[0]?.address?.toLowerCase() ?? null;
+    if (!fromAddr) return null;
+
+    const subject = parsed.subject ?? null;
+    const bodyText = parsed.text ?? null;
+    const bodyHtml = typeof parsed.html === "string" ? parsed.html : null;
+    const snippet = bodyText
+      ? bodyText.replace(/\s+/g, " ").trim().slice(0, 200)
+      : null;
+
+    const inReplyTo = normalizeMsgId(
+      typeof parsed.inReplyTo === "string" ? parsed.inReplyTo : null
+    );
+    let references: string[] = [];
+    if (Array.isArray(parsed.references)) {
+      references = parsed.references
+        .map((r) => normalizeMsgId(r))
+        .filter((x): x is string => !!x);
+    } else if (typeof parsed.references === "string") {
+      references = parsed.references
+        .split(/\s+/)
+        .map((r) => normalizeMsgId(r))
+        .filter((x): x is string => !!x);
+    }
+
+    return {
+      from: fromAddr,
+      subject,
+      snippet,
+      body_text: bodyText,
+      body_html: bodyHtml,
+      date: parsed.date ?? null,
+      message_id: normalizeMsgId(typeof parsed.messageId === "string" ? parsed.messageId : null),
+      in_reply_to: inReplyTo,
+      references,
+      is_auto_reply: detectAutoReply(parsed.headers, subject, fromAddr),
+      is_bounce: detectBounce(parsed.headers, subject, fromAddr),
+    };
+  } catch (e) {
+    // Skip messages we can't parse — Gmail occasionally returns 404 for
+    // mid-flight deletions. We still want to make progress on the rest.
+    // Strict callers (the pre-send reply check) rethrow anything but a 404.
+    const status = (e as { code?: number; status?: number })?.code ?? (e as { status?: number })?.status;
+    if (opts.strict && status !== 404) throw e;
+    return null;
+  }
 }
 
 // ---- Helpers below are duplicated from replies.ts on purpose. They're tiny

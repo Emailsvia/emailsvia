@@ -54,7 +54,11 @@ export async function POST(req: NextRequest) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 
-  const sentCount = results.filter((r) => r.status === "sent").length;
+  // A tick can now send one email per campaign/mailbox, so sum `sent`.
+  const sentCount = results.reduce(
+    (n, r) => n + (typeof r.sent === "number" ? r.sent : r.status === "sent" ? 1 : 0),
+    0
+  );
   return NextResponse.json({
     ok: true,
     iterations: results.length,

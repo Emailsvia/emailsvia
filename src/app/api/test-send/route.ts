@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { supabaseUser } from "@/lib/supabase-server";
-import { sendMail, type SenderCreds } from "@/lib/mail";
-import { render, toHtml, toPlain } from "@/lib/template";
+import { sendMail, serversFromRow, SENDER_SERVER_COLUMNS, type SenderCreds } from "@/lib/mail";
+import { render, spin, toHtml, toPlain } from "@/lib/template";
 import { getUser } from "@/lib/auth-server";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { downloadAttachment } from "@/lib/attachment";
@@ -18,6 +18,12 @@ const Schema = z.object({
   sender_id: z.string().uuid().nullable().optional(),
   vars: z.record(z.string()).optional(),
   campaign_id: z.string().uuid().nullable().optional(),
+  // Optional follow-up steps: sent right after the first email, threaded
+  // exactly like the real sequence, so the tester sees the whole thread.
+  steps: z
+    .array(z.object({ subject: z.string().max(500).nullable().optional(), template: z.string().min(1) }))
+    .max(10)
+    .optional(),
 });
 
 const MAX_ATTACHMENTS = 5;
@@ -50,6 +56,7 @@ export async function POST(req: NextRequest) {
   if (isMultipart) {
     const form = await req.formData();
     const varsStr = form.get("vars");
+    const stepsStr = form.get("steps");
     raw = {
       to: form.get("to"),
       subject: form.get("subject"),
@@ -57,6 +64,7 @@ export async function POST(req: NextRequest) {
       sender_id: form.get("sender_id") || null,
       campaign_id: form.get("campaign_id") || null,
       vars: typeof varsStr === "string" && varsStr ? JSON.parse(varsStr) : undefined,
+      steps: typeof stepsStr === "string" && stepsStr ? JSON.parse(stepsStr) : undefined,
     };
     for (const entry of form.getAll("file")) {
       if (entry instanceof File && entry.size > 0) pendingFiles.push(entry);
@@ -79,7 +87,7 @@ export async function POST(req: NextRequest) {
   if (parsed.data.sender_id) {
     const { data: row } = await db
       .from("senders")
-      .select("id, email, app_password, from_name, auth_method, oauth_refresh_token, oauth_access_token, oauth_expires_at")
+      .select(`id, email, app_password, from_name, auth_method, oauth_refresh_token, oauth_access_token, oauth_expires_at, ${SENDER_SERVER_COLUMNS}`)
       .eq("id", parsed.data.sender_id)
       .maybeSingle();
     if (row) {
@@ -92,6 +100,7 @@ export async function POST(req: NextRequest) {
           refreshToken: decryptSecret(row.oauth_refresh_token),
           accessToken: row.oauth_access_token ? decryptSecret(row.oauth_access_token) : null,
           expiresAt: row.oauth_expires_at ? new Date(row.oauth_expires_at) : null,
+          sendAs: row.send_as_email ?? null,
         };
       } else if (row.app_password) {
         sender = {
@@ -99,6 +108,8 @@ export async function POST(req: NextRequest) {
           email: row.email,
           fromName: row.from_name,
           appPassword: decryptSecret(row.app_password),
+          sendAs: row.send_as_email ?? null,
+          ...serversFromRow(row),
         };
       }
     }
@@ -147,8 +158,10 @@ export async function POST(req: NextRequest) {
   }
 
   const vars = parsed.data.vars ?? { Name: "Test", Company: "Your Company" };
-  const subject = `[TEST] ${render(parsed.data.subject, vars)}`;
-  const rendered = render(parsed.data.template, vars);
+  // Fresh spintax pick per test so repeated tests show the variations.
+  const seed = `test:${Date.now()}`;
+  const subject = `[TEST] ${render(spin(parsed.data.subject, `${seed}:subject`), vars)}`;
+  const rendered = render(spin(parsed.data.template, seed), vars);
   const html = toHtml(rendered);
   const text = toPlain(rendered);
 
@@ -161,17 +174,49 @@ export async function POST(req: NextRequest) {
       sender,
       attachments: attachments.length > 0 ? attachments : undefined,
     });
+    let latestTokens = result.tokensRefreshed ?? null;
+
+    // Follow-up steps: same threading the tick uses (In-Reply-To/References
+    // to the first message, "Re:" subject, Gmail threadId for OAuth).
+    const steps = parsed.data.steps ?? [];
+    const firstMsgId = result.messageId
+      ? result.messageId.startsWith("<") ? result.messageId : `<${result.messageId}>`
+      : null;
+    for (const step of steps) {
+      const stepSubject = render(spin(step.subject || parsed.data.subject, `${seed}:subject`), vars).replace(/^re:\s*/i, "");
+      const stepBody = render(spin(step.template, seed), vars);
+      const stepSender: SenderCreds =
+        sender.authMethod === "oauth" && latestTokens
+          ? { ...sender, accessToken: latestTokens.accessToken, expiresAt: latestTokens.expiresAt }
+          : sender;
+      const r = await sendMail({
+        to: parsed.data.to,
+        subject: `Re: [TEST] ${stepSubject}`,
+        text: toPlain(stepBody),
+        html: toHtml(stepBody),
+        sender: stepSender,
+        headers: firstMsgId ? { "In-Reply-To": firstMsgId, References: firstMsgId } : undefined,
+        threadId: result.threadId ?? null,
+      });
+      if (r.tokensRefreshed) latestTokens = r.tokensRefreshed;
+    }
+
     // Persist a refreshed OAuth token if Gmail handed us a new one mid-send.
-    if (senderRowId && result.tokensRefreshed) {
+    if (senderRowId && latestTokens) {
       await supabaseAdmin()
         .from("senders")
         .update({
-          oauth_access_token: encryptSecret(result.tokensRefreshed.accessToken),
-          oauth_expires_at: result.tokensRefreshed.expiresAt.toISOString(),
+          oauth_access_token: encryptSecret(latestTokens.accessToken),
+          oauth_expires_at: latestTokens.expiresAt.toISOString(),
         })
         .eq("id", senderRowId);
     }
-    return NextResponse.json({ ok: true, messageId: result.messageId, attached: attachments.length });
+    return NextResponse.json({
+      ok: true,
+      messageId: result.messageId,
+      attached: attachments.length,
+      follow_ups_sent: steps.length,
+    });
   } catch (e) {
     return NextResponse.json(
       { error: e instanceof Error ? e.message : String(e) },

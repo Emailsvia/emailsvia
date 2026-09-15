@@ -101,7 +101,80 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     }
   }
 
+  // ---- Sequence performance: sends and replies per step ----
+  // Step 0 = first email. A reply is credited to the last step the recipient
+  // got before answering (follow_up_count at reply time: follow-ups stop on
+  // reply, so it doesn't move afterwards).
+  const [{ data: logRows }, { data: recRows }] = await Promise.all([
+    db
+      .from("send_log")
+      .select("kind, step_number, sender_id")
+      .eq("campaign_id", id)
+      .is("error_class", null)
+      .range(0, 199_999),
+    db
+      .from("recipients")
+      .select("status, follow_up_count, sender_id")
+      .eq("campaign_id", id)
+      .in("status", ["sent", "replied", "bounced", "unsubscribed"])
+      .range(0, 99_999),
+  ]);
+  const stepSent = new Map<number, number>();
+  const senderSent = new Map<string, number>();
+  for (const l of logRows ?? []) {
+    const step = l.kind === "follow_up" ? (l.step_number ?? 0) : 0;
+    if (l.kind === "retry" || l.kind === "initial" || l.kind === "follow_up") {
+      stepSent.set(step, (stepSent.get(step) ?? 0) + 1);
+    }
+    if (l.sender_id) senderSent.set(l.sender_id, (senderSent.get(l.sender_id) ?? 0) + 1);
+  }
+  const stepReplies = new Map<number, number>();
+  const senderAgg = new Map<string, { contacted: number; replied: number; bounced: number }>();
+  for (const r of recRows ?? []) {
+    if (r.status === "replied") {
+      const step = r.follow_up_count ?? 0;
+      stepReplies.set(step, (stepReplies.get(step) ?? 0) + 1);
+    }
+    if (r.sender_id) {
+      const a = senderAgg.get(r.sender_id) ?? { contacted: 0, replied: 0, bounced: 0 };
+      a.contacted++;
+      if (r.status === "replied") a.replied++;
+      if (r.status === "bounced") a.bounced++;
+      senderAgg.set(r.sender_id, a);
+    }
+  }
+  const totalReplies = Array.from(stepReplies.values()).reduce((a, b) => a + b, 0);
+  const stepNumbers = Array.from(new Set([...stepSent.keys(), ...stepReplies.keys()])).sort((a, b) => a - b);
+  const steps = stepNumbers.map((n) => ({
+    step: n,
+    sent: stepSent.get(n) ?? 0,
+    replies: stepReplies.get(n) ?? 0,
+    reply_rate: rate(stepReplies.get(n) ?? 0, stepSent.get(n) ?? 0),
+    share_of_replies: rate(stepReplies.get(n) ?? 0, totalReplies),
+  }));
+
+  // ---- Inbox health (rotation / sticky sender) ----
+  const senderIds = Array.from(new Set([...senderSent.keys(), ...senderAgg.keys()]));
+  const { data: senderRows } = senderIds.length
+    ? await db.from("senders").select("id, email").in("id", senderIds)
+    : { data: [] as { id: string; email: string }[] };
+  const senders = senderIds
+    .map((sid) => {
+      const a = senderAgg.get(sid) ?? { contacted: 0, replied: 0, bounced: 0 };
+      return {
+        sender_id: sid,
+        email: senderRows?.find((s) => s.id === sid)?.email ?? "(removed sender)",
+        sent: senderSent.get(sid) ?? 0,
+        contacted: a.contacted,
+        reply_rate: rate(a.replied, a.contacted),
+        bounce_rate: rate(a.bounced, a.contacted),
+      };
+    })
+    .sort((a, b) => b.sent - a.sent);
+
   return NextResponse.json({
+    steps,
+    senders,
     total: total.count ?? 0,
     sent: sentCount,
     replied: replied.count ?? 0,

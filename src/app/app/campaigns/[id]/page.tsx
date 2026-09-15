@@ -13,7 +13,33 @@ import KpiCard from "@/components/app/KpiCard";
 import StatusPill from "@/components/app/StatusPill";
 
 type Sender = { id: string; label: string; email: string; from_name: string | null; is_default: boolean };
-type FollowUpStep = { step_number: number; delay_days: number; subject: string | null; template: string };
+type FollowUpStep = {
+  step_number: number;
+  delay_days: number;
+  delay_unit?: "days" | "business_days" | null;
+  subject: string | null;
+  template: string;
+  condition?: { type: string; intents?: string[] } | null;
+};
+
+function conditionLabel(c: FollowUpStep["condition"]): string | null {
+  if (!c || c.type === "always") return null;
+  if (c.type === "no_reply") return "only if no reply";
+  const list = (c.intents ?? []).map((x) => x.replace("_", " ")).join(", ");
+  return c.type === "intent_in" ? `only if reply is: ${list}` : `unless reply is: ${list}`;
+}
+
+// Why a sequence ended early, in plain words (recipients.stop_reason).
+const STOP_REASON_LABEL: Record<string, string> = {
+  replied: "Replied, sequence stopped",
+  domain_replied: "Colleague replied, stopped",
+  bounced: "Bounced",
+  suppressed: "On do-not-contact list",
+  merge_failed: "Follow-up skipped: missing merge field",
+  send_failed: "Follow-up failed",
+  completed: "Sequence complete",
+  guard_failed: "Follow-ups stopped: couldn't read the inbox to check for replies",
+};
 type Stats = {
   total: number; sent: number; replied: number; failed: number; pending: number; unsubscribed: number;
   follow_ups_sent: number; retries_sent: number;
@@ -26,6 +52,8 @@ type Stats = {
   timezone: string;
   variants?: Array<{ id: string; sent: number; replied: number; reply_rate: number }> | null;
   suggested_winner?: string | null;
+  steps?: Array<{ step: number; sent: number; replies: number; reply_rate: number; share_of_replies: number }>;
+  senders?: Array<{ sender_id: string; email: string; sent: number; contacted: number; reply_rate: number; bounce_rate: number }>;
   current_winner?: string | null;
 };
 
@@ -53,6 +81,7 @@ type Campaign = {
   known_vars: string[];
   created_at: string;
   updated_at: string;
+  paused_reason?: "bounce_rate" | "sender_auth" | null;
 };
 
 type Recipient = {
@@ -65,6 +94,10 @@ type Recipient = {
   sent_at: string | null;
   error: string | null;
   row_index: number;
+  next_follow_up_at?: string | null;
+  next_step_number?: number | null;
+  follow_up_count?: number;
+  stop_reason?: string | null;
 };
 
 // Status presentation now lives in <StatusPill> (src/components/app/StatusPill.tsx).
@@ -191,7 +224,17 @@ export default function CampaignDetail({ params }: { params: Promise<{ id: strin
     setValidating(false);
     if (!r.ok) { alert("Validation failed"); return; }
     const d = await r.json();
-    alert(`Checked ${d.checked}, ${d.invalid} invalid${d.invalid > 0 ? ` (${d.invalid_emails.slice(0, 5).join(", ")}${d.invalid > 5 ? "…" : ""})` : ""}.`);
+    alert(
+      `Checked ${d.checked}, ${d.invalid} invalid${d.invalid > 0 ? ` (${d.invalid_emails.slice(0, 5).join(", ")}${d.invalid > 5 ? "…" : ""})` : ""}.` +
+        (d.invalid > 0 ? " Invalid addresses were skipped and won't be emailed." : "") +
+        (d.role_addresses > 0 ? `\n${d.role_addresses} are shared inboxes (info@, sales@…): deliverable, but rarely reach a decision-maker.` : "") +
+        (d.verification
+          ? `\nMailbox check: ${d.verification.verified} verified` +
+            (d.verification.catch_all > 0 ? `, ${d.verification.catch_all} catch-all (the domain accepts any address, so delivery can't be confirmed; kept)` : "") +
+            (d.verification.errors > 0 ? `, ${d.verification.errors} couldn't be checked (run again)` : "")
+          : "") +
+        (d.complete === false ? "\nLarge list: run Validate again to check the rest." : "")
+    );
     load();
   }
 
@@ -387,6 +430,34 @@ export default function CampaignDetail({ params }: { params: Promise<{ id: strin
       )}
 
       {/* empty-recipients banner */}
+      {campaign.status === "paused" && campaign.paused_reason && (
+        <div
+          className="mb-6 rounded-xl border px-4 py-3 text-[13px]"
+          style={{ borderColor: "rgb(255 159 67 / 0.35)", background: "rgb(255 159 67 / 0.06)" }}
+        >
+          <div className="font-semibold text-[rgb(255_180_110)]">
+            {campaign.paused_reason === "bounce_rate"
+              ? "Paused automatically: too many bounces"
+              : "Paused automatically: your domain failed authentication"}
+          </div>
+          <div className="text-ink-600 mt-1">
+            {campaign.paused_reason === "bounce_rate" ? (
+              <>
+                More than 5% of the people this campaign emailed bounced. Continuing would damage your
+                domain&rsquo;s reputation. Remove or verify the bad addresses (bounced ones are already on
+                your do-not-contact list), then resume.
+              </>
+            ) : (
+              <>
+                A receiving mail server rejected this sender&rsquo;s SPF/DKIM/DMARC setup, so every email would
+                bounce. Open <Link href="/app/senders" className="underline">Senders</Link> → Check DNS, fix the
+                records it flags, then resume.
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {campaign.status === "draft" && total === 0 && (
         <div
           className="rounded-xl border px-4 py-3 mb-8 flex items-start gap-3"
@@ -454,6 +525,8 @@ export default function CampaignDetail({ params }: { params: Promise<{ id: strin
       {campaign.tracking_enabled && stats && stats.opens > 0 && (
         <EngagementSection stats={stats} />
       )}
+
+      {stats && stats.sent > 0 && <PerformancePanel stats={stats} />}
 
       {stats && stats.variants && stats.variants.length > 0 && (
         <VariantPanel
@@ -547,9 +620,14 @@ export default function CampaignDetail({ params }: { params: Promise<{ id: strin
                   <div key={s.step_number} className="grid grid-cols-[70px,1fr] gap-4">
                     <div>
                       <div className="text-[12px] font-semibold text-ink">Step {s.step_number}</div>
-                      <div className="text-[11px] text-ink-500 mt-0.5">+{s.delay_days}d delay</div>
+                      <div className="text-[11px] text-ink-500 mt-0.5">
+                        +{s.delay_days} {s.delay_unit === "business_days" ? "business " : ""}day{s.delay_days === 1 ? "" : "s"}
+                      </div>
                     </div>
                     <div className="border-l border-ink-200 pl-4">
+                      {conditionLabel(s.condition) && (
+                        <div className="text-[11px] text-ink-500 mb-1.5">{conditionLabel(s.condition)}</div>
+                      )}
                       {s.subject && <div className="text-[13px] font-medium mb-1.5">{s.subject}</div>}
                       <pre className="whitespace-pre-wrap font-mono text-[12px] text-ink-700 max-h-48 overflow-auto">{s.template}</pre>
                     </div>
@@ -641,6 +719,12 @@ export default function CampaignDetail({ params }: { params: Promise<{ id: strin
                   ? new Date(r.sent_at).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
                   : r.error ? null : "—";
                 const idx = String(i + 1).padStart(3, "0");
+                const sequenceNote =
+                  r.status === "sent" && r.next_follow_up_at
+                    ? `Next: step ${r.next_step_number ?? (r.follow_up_count ?? 0) + 1} · ${new Date(r.next_follow_up_at).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}`
+                    : r.stop_reason && r.stop_reason !== "replied"
+                      ? STOP_REASON_LABEL[r.stop_reason] ?? null
+                      : null;
                 const act = activityById.get(r.id);
                 const engage = act && (act.opens > 0 || act.clicks > 0 || act.replied);
                 return (
@@ -664,7 +748,10 @@ export default function CampaignDetail({ params }: { params: Promise<{ id: strin
                         <span className="shrink-0"><StatusPill status={r.status} /></span>
                       </div>
                       <div className="flex items-center justify-between mt-2 text-[11px] text-ink-500">
-                        <span>{when !== null ? when : r.error && <span className="text-[rgb(252_165_165)]">{r.error}</span>}</span>
+                        <span>
+                          {when !== null ? when : r.error && <span className="text-[rgb(252_165_165)]">{r.error}</span>}
+                          {sequenceNote && <span className="block text-ink-400">{sequenceNote}</span>}
+                        </span>
                         {engage && <EngagementBadge act={act!} />}
                       </div>
                     </div>
@@ -680,6 +767,7 @@ export default function CampaignDetail({ params }: { params: Promise<{ id: strin
                       <StatusPill status={r.status} />
                       <span className="text-[11px] text-ink-500 text-right">
                         {when !== null ? when : r.error && <span className="text-[rgb(252_165_165)] truncate block max-w-[160px]" title={r.error}>{r.error}</span>}
+                        {sequenceNote && <span className="block text-ink-400 whitespace-nowrap">{sequenceNote}</span>}
                       </span>
                     </div>
                   </button>
@@ -1026,6 +1114,130 @@ function WeekdayBars({ opens, clicks, peakIdx }: { opens: number[]; clicks: numb
   );
 }
 
+// Cold-email reply-rate benchmarks (Instantly 2026 benchmark report, billions
+// of emails): average 3.43%, top quartile 5.5%, elite 10.7%+.
+const BENCHMARKS = { avg: 3.4, good: 5.5, elite: 10.7 };
+const MIN_SAMPLE = 50;
+
+function PerformancePanel({ stats }: { stats: Stats }) {
+  const r = stats.rates.reply_rate;
+  const early = stats.sent < MIN_SAMPLE;
+  const band =
+    r >= BENCHMARKS.elite ? { label: "Elite", color: "rgb(110 231 183)" }
+    : r >= BENCHMARKS.good ? { label: "Top quartile", color: "rgb(110 231 183)" }
+    : r >= BENCHMARKS.avg ? { label: "Around average", color: "rgb(255 180 110)" }
+    : { label: "Below average", color: "rgb(252 165 165)" };
+  const scaleMax = Math.max(BENCHMARKS.elite * 1.3, r * 1.1);
+  const pos = (v: number) => `${Math.min(100, (v / scaleMax) * 100)}%`;
+  const steps = stats.steps ?? [];
+  const senders = stats.senders ?? [];
+
+  return (
+    <section className="sheet p-5 my-6 space-y-6">
+      <div>
+        <div className="flex items-baseline justify-between gap-3 flex-wrap">
+          <h3 className="text-[14px] font-semibold">Reply rate vs. cold-email benchmarks</h3>
+          <div className="text-[13px]">
+            <span className="font-mono font-semibold">{r}%</span>{" "}
+            {early ? (
+              <span className="text-ink-500">· early: {stats.sent} of {MIN_SAMPLE} sends needed to judge</span>
+            ) : (
+              <span style={{ color: band.color }}>· {band.label}</span>
+            )}
+          </div>
+        </div>
+        <div className="relative h-2 rounded-full bg-ink-100 mt-3" aria-hidden>
+          <div
+            className="absolute inset-y-0 left-0 rounded-full"
+            style={{ width: pos(r), background: early ? "rgb(161 161 170 / 0.6)" : band.color }}
+          />
+          {([["avg", BENCHMARKS.avg], ["top 25%", BENCHMARKS.good], ["elite", BENCHMARKS.elite]] as const).map(([k, v]) => (
+            <div key={k} className="absolute -top-1 -bottom-1 w-px bg-ink-400" style={{ left: pos(v) }} />
+          ))}
+        </div>
+        <div className="relative h-4 mt-1 text-[10.5px] font-mono text-ink-500">
+          {([["avg 3.4%", BENCHMARKS.avg], ["top 25% 5.5%", BENCHMARKS.good], ["elite 10.7%", BENCHMARKS.elite]] as const).map(([k, v]) => (
+            <span key={k} className="absolute -translate-x-1/2 whitespace-nowrap" style={{ left: pos(v) }}>{k}</span>
+          ))}
+        </div>
+      </div>
+
+      {steps.length > 1 && (
+        <div>
+          <h3 className="text-[14px] font-semibold">Sequence performance</h3>
+          <p className="text-[12px] text-ink-500 mt-0.5">
+            Replies credited to the last email they got. Follow-ups usually bring 40–60% of all replies.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[13px] mt-2">
+              <thead>
+                <tr className="text-[11px] uppercase tracking-wide text-ink-500 text-left">
+                  <th className="py-1.5 font-medium">Email</th>
+                  <th className="py-1.5 font-medium">Sent</th>
+                  <th className="py-1.5 font-medium">Replies</th>
+                  <th className="py-1.5 font-medium">Reply rate</th>
+                  <th className="py-1.5 font-medium">Share of replies</th>
+                </tr>
+              </thead>
+              <tbody>
+                {steps.map((st) => (
+                  <tr key={st.step} className="border-t border-ink-100">
+                    <td className="py-1.5">{st.step === 0 ? "First email" : `Follow-up ${st.step}`}</td>
+                    <td className="py-1.5 font-mono">{st.sent}</td>
+                    <td className="py-1.5 font-mono">{st.replies}</td>
+                    <td className="py-1.5 font-mono">{st.sent > 0 ? `${st.reply_rate}%` : "—"}</td>
+                    <td className="py-1.5">
+                      <div className="flex items-center gap-2">
+                        <div className="h-1.5 w-20 rounded-full bg-ink-100 overflow-hidden">
+                          <div className="h-full bg-[rgb(255_159_67)]" style={{ width: `${st.share_of_replies}%` }} />
+                        </div>
+                        <span className="font-mono text-[12px] text-ink-600">{st.share_of_replies}%</span>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {senders.length > 1 && (
+        <div>
+          <h3 className="text-[14px] font-semibold">Inbox health</h3>
+          <p className="text-[12px] text-ink-500 mt-0.5">
+            Per sending inbox. A bounce rate above 3% or a reply rate far below the others usually means that inbox is landing in spam.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[13px] mt-2">
+              <thead>
+                <tr className="text-[11px] uppercase tracking-wide text-ink-500 text-left">
+                  <th className="py-1.5 font-medium">Inbox</th>
+                  <th className="py-1.5 font-medium">Emails sent</th>
+                  <th className="py-1.5 font-medium">Reply rate</th>
+                  <th className="py-1.5 font-medium">Bounce rate</th>
+                </tr>
+              </thead>
+              <tbody>
+                {senders.map((sd) => (
+                  <tr key={sd.sender_id} className="border-t border-ink-100">
+                    <td className="py-1.5 font-mono text-[12px] truncate max-w-[220px]">{sd.email}</td>
+                    <td className="py-1.5 font-mono">{sd.sent}</td>
+                    <td className="py-1.5 font-mono">{sd.contacted > 0 ? `${sd.reply_rate}%` : "—"}</td>
+                    <td className="py-1.5 font-mono" style={{ color: sd.bounce_rate > 3 ? "rgb(252 165 165)" : undefined }}>
+                      {sd.contacted > 0 ? `${sd.bounce_rate}%` : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function VariantPanel({
   campaignId,
   variants,
@@ -1084,7 +1296,7 @@ function VariantPanel({
             color: "rgb(255 180 110)",
           }}
         >
-          Variant <b className="text-ink">{suggestedWinner}</b> is winning. Promote to send all remaining recipients with that variant?
+          Variant <b className="text-ink">{suggestedWinner}</b> is winning by a statistically meaningful margin. Pin it to send all remaining recipients that variant (campaigns with an auto-pick threshold do this automatically).
         </div>
       )}
       <table className="w-full text-[13px]">

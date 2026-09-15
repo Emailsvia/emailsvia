@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { supabaseUser } from "@/lib/supabase-server";
 import { getUser } from "@/lib/auth-server";
+import { isValidTimeZone } from "@/lib/time";
+import { getPlan, hasFeature } from "@/lib/billing";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,7 +30,10 @@ const PatchSchema = z.object({
   gap_seconds: z.number().int().min(30).max(3600).optional(),
   window_start_hour: z.number().int().min(0).max(23).optional(),
   window_end_hour: z.number().int().min(1).max(24).optional(),
-  timezone: z.string().optional(),
+  // Must be a real IANA zone: tick feeds it straight into Intl, which throws
+  // on garbage and would stall every campaign behind this one.
+  timezone: z.string().refine(isValidTimeZone, "invalid timezone").optional(),
+  stop_on_domain_reply: z.boolean().optional(),
   follow_ups_enabled: z.boolean().optional(),
   retry_enabled: z.boolean().optional(),
   max_retries: z.number().int().min(1).max(5).optional(),
@@ -92,10 +97,28 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   const parsed = PatchSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: parsed.error.format() }, { status: 400 });
   const db = await supabaseUser();
+  // Only gate a change: the editor re-sends stored variants on every save,
+  // and a downgraded user must still be able to rename or pause.
+  const { data: currentCampaign } = parsed.data.variants
+    ? await db.from("campaigns").select("variants").eq("id", id).maybeSingle()
+    : { data: null };
+  const variantsChanged =
+    !!parsed.data.variants &&
+    parsed.data.variants.length > 0 &&
+    JSON.stringify(parsed.data.variants) !== JSON.stringify(currentCampaign?.variants ?? null);
+  if (variantsChanged) {
+    const plan = await getPlan(db, u.id);
+    if (!hasFeature(plan, "a_b_testing")) {
+      return NextResponse.json({ error: "A/B testing is available on Growth and Scale." }, { status: 402 });
+    }
+  }
   const { archived, ...rest } = parsed.data as typeof parsed.data & { archived?: boolean };
   const update: Record<string, unknown> = { ...rest };
   if (archived === true) update.archived_at = new Date().toISOString();
   if (archived === false) update.archived_at = null;
+  // Any explicit status change (resume, manual pause) supersedes an
+  // automatic pause reason.
+  if (rest.status) update.paused_reason = null;
   const { data, error } = await db
     .from("campaigns")
     .update(update)
@@ -103,6 +126,12 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     .select()
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  // Turning follow-ups on after first sends went out: schedule step 1 for
+  // everyone already contacted (no-op if there are no steps yet — the
+  // follow-ups PUT runs the same backfill once steps are saved).
+  if (rest.follow_ups_enabled === true) {
+    await db.rpc("backfill_follow_ups", { p_campaign_id: id });
+  }
   return NextResponse.json({ campaign: data });
 }
 

@@ -3,16 +3,30 @@ import { marked } from "marked";
 const MD_LINK = /\[([^\]]+)\]\(([^)]+)\)/g;
 const TAG = /\{\{\s*([^}]+?)\s*\}\}/g;
 
+// `{{Key}}` or `{{Key | fallback}}`. The fallback is used when the column
+// is missing or blank for a row. `{{ai: ...}}` tags are left whole (their
+// prompt may legitimately contain "|").
+function parseTag(raw: string): { key: string; fallback: string | null } {
+  // The Markdown editor may save "|" as "\|"; treat both the same.
+  const t = String(raw).trim().replace(/\\\|/g, "|");
+  if (/^ai:/i.test(t)) return { key: t, fallback: null };
+  const bar = t.indexOf("|");
+  if (bar === -1) return { key: t, fallback: null };
+  return { key: t.slice(0, bar).trim(), fallback: t.slice(bar + 1).trim() };
+}
+
 export function render(tpl: string, vars: Record<string, string>) {
   const resolved: Record<string, string> = {
     ...vars,
     Name: vars.Name ?? vars["First Name"] ?? vars.FirstName ?? "",
     Company: vars.Company ?? vars["Company Name"] ?? "",
   };
-  return tpl.replace(TAG, (_m, key) => {
-    const k = String(key).trim();
+  return tpl.replace(TAG, (_m, raw) => {
+    const { key: k, fallback } = parseTag(raw);
     const v = resolved[k];
-    if (Object.prototype.hasOwnProperty.call(resolved, k)) return v ?? "";
+    const has = Object.prototype.hasOwnProperty.call(resolved, k);
+    if (fallback !== null) return has && v != null && String(v).trim() !== "" ? v : fallback;
+    if (has) return v ?? "";
     return `{{${k}}}`;
   });
 }
@@ -21,8 +35,31 @@ export function extractTags(tpl: string): string[] {
   const out = new Set<string>();
   let m: RegExpExecArray | null;
   const re = new RegExp(TAG.source, "g");
-  while ((m = re.exec(tpl))) out.add(m[1].trim());
+  while ((m = re.exec(tpl))) out.add(parseTag(m[1]).key);
   return Array.from(out);
+}
+
+// Spintax: `{Hi|Hey|Hello}` picks one option. Deterministic per `seed` (use
+// the recipient id + step) so retries, previews and the sent email agree,
+// while different recipients get different wording. Double-brace merge
+// tags are never touched. Nested spintax isn't supported.
+const SPIN = /(?<!\{)\{([^{}]*\|[^{}]*)\}(?!\})/g;
+
+function hash32(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+export function spin(tpl: string, seed: string): string {
+  let n = 0;
+  return tpl.replace(SPIN, (_m, body: string) => {
+    const options = body.replace(/\\\|/g, "|").split("|");
+    return options[hash32(`${seed}:${n++}`) % options.length];
+  });
 }
 
 // Returns the set of tag names referenced by `tpl` that resolve to empty
@@ -36,13 +73,16 @@ export function missingMergeFields(tpl: string, vars: Record<string, string>): s
     Name: vars.Name ?? vars["First Name"] ?? vars.FirstName ?? "",
     Company: vars.Company ?? vars["Company Name"] ?? "",
   };
-  const tags = extractTags(tpl);
-  const out: string[] = [];
-  for (const t of tags) {
-    const v = resolved[t];
-    if (v === undefined || v === null || String(v).trim() === "") out.push(t);
+  const out = new Set<string>();
+  let m: RegExpExecArray | null;
+  const re = new RegExp(TAG.source, "g");
+  while ((m = re.exec(tpl))) {
+    const { key, fallback } = parseTag(m[1]);
+    if (fallback !== null) continue; // has a default, never "missing"
+    const v = resolved[key];
+    if (v === undefined || v === null || String(v).trim() === "") out.add(key);
   }
-  return out;
+  return Array.from(out);
 }
 
 function escapeAttr(v: string) {

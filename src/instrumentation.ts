@@ -59,8 +59,12 @@ function startDevScheduler() {
         to?: string;
         campaign?: string;
         sent_today?: number;
+        sent?: number;
       };
-      if (data.status === "sent") {
+      if (data.status === "sent" && (data.sent ?? 1) > 1) {
+        // eslint-disable-next-line no-console
+        console.log(`[dev-cron] tick → sent ${data.sent} emails across campaigns`);
+      } else if (data.status === "sent") {
         // eslint-disable-next-line no-console
         console.log(
           `[dev-cron] tick → sent to ${data.to} (${data.campaign}, ${data.sent_today}/day)`
@@ -90,12 +94,21 @@ function startDevScheduler() {
     }
   };
 
+  const webhooks = async () => {
+    try {
+      await fetch(`${baseUrl}/api/cron/webhooks`, { headers: auth, cache: "no-store" });
+    } catch {
+      // Best-effort in dev.
+    }
+  };
+
   // Wait 5s before first run so the dev server has finished booting.
   setTimeout(() => {
     void tick();
     void checkReplies();
     setInterval(tick, 60_000);          // 1/min — matches Supabase pg_cron
     setInterval(checkReplies, 5 * 60_000); // every 5 min — matches Supabase pg_cron
+    setInterval(webhooks, 60_000);      // webhook queue + retries
     // eslint-disable-next-line no-console
     console.log(
       "[dev-cron] scheduler started — /api/tick every 60s, /api/check-replies every 5min. (No-op in production.)"

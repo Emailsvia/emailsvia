@@ -1,25 +1,42 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as Sentry from "@sentry/nextjs";
 import { supabaseAdmin } from "@/lib/supabase";
-import { sendMail, type SenderCreds } from "@/lib/mail";
-import { render, toHtml, toPlain, missingMergeFields } from "@/lib/template";
+import {
+  sendMail,
+  serversFromRow,
+  SENDER_SERVER_COLUMNS,
+  type SenderCreds,
+  type SenderServerRow,
+} from "@/lib/mail";
+import { render, spin, toHtml, toPlain, missingMergeFields } from "@/lib/template";
 import { inWindow, dayKey } from "@/lib/time";
-import { signToken, appUrl, cronBearerOk } from "@/lib/tokens";
+import { signToken, signClickUrl, appUrl, cronBearerOk } from "@/lib/tokens";
 import { downloadAttachment } from "@/lib/attachment";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { warmupCapForSender } from "@/lib/warmup";
 import { assertCanSend, incrementUsage, hasFeature, type Plan } from "@/lib/billing";
-import { classifyError } from "@/lib/errors";
+import { classifyError, isHardBounce } from "@/lib/errors";
 import { markSenderRevoked } from "@/lib/sender-revoke";
-import { isVariantArray, pickVariant, type Variant } from "@/lib/variants";
+import { isVariantArray, pickVariant, maybeAutoPromoteWinner, type Variant } from "@/lib/variants";
 import { personalizeTemplate } from "@/lib/personalize";
 import {
   fetchReplyContext,
-  nextEligibleStep,
-  type Condition,
+  resolveDueStep,
+  stepAfter,
   type FollowUpStep as ConditionalStep,
 } from "@/lib/follow-up-condition";
+import { checkBeforeFollowUp, saveGuardReply, type GuardVerdict } from "@/lib/followup-guard";
+import { loadSenderCreds, persistRefreshedToken } from "@/lib/sender-creds";
+import { addDelay, withJitter } from "@/lib/sequence-schedule";
+import {
+  stopDomainAfterReply,
+  findSuppression,
+  suppressEmail,
+  maybePauseForBounces,
+} from "@/lib/sequence-stop";
 import { dispatch as fireWebhook } from "@/lib/webhooks";
+import { emitEmailSent, emitBounced, emitSequenceStopped, emitCampaignPaused } from "@/lib/events";
+import { mapWithLimit } from "@/lib/email-validator";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,7 +49,59 @@ function unauth() {
 // generous 75s so a slow but completing run never lets a parallel tick in,
 // while a crashed run frees automatically after 75s.
 const TICK_LOCK_KEY = "emailsvia:tick";
-const TICK_LOCK_TTL_SECONDS = 75;
+// Must stay above the function's maxDuration (vercel.json: 120s) so a slow
+// but live tick can never be overlapped by the next one.
+const TICK_LOCK_TTL_SECONDS = 180;
+
+// Transient send failures on a follow-up retry the same step this many times.
+const FOLLOW_UP_MAX_ATTEMPTS = 3;
+// Failed pre-send reply checks (inbox unreachable) before the sequence stops.
+const GUARD_MAX_ATTEMPTS = 6;
+
+// Parallel sending: each tick sends at most one email per campaign and per
+// mailbox, for up to MAX_CAMPAIGNS_PER_TICK campaigns, SEND_CONCURRENCY at a
+// time. No new slot starts after SEND_BUDGET_MS and no recipient is claimed
+// after CLAIM_DEADLINE_MS, leaving the in-flight sends (SMTP/API timeouts
+// are ~30s) room to finish inside maxDuration (120s).
+const MAX_CAMPAIGNS_PER_TICK = 25;
+const CLAIM_DEADLINE_MS = 40_000;
+// A claimed-but-unfinished send (process killed mid-send) is left alone
+// this long before the row is eligible again, so a crash can't turn into
+// an immediate duplicate on the next tick.
+const IN_FLIGHT_HOLD_MS = 2 * 60 * 60 * 1000;
+// Rotation campaigns get one send per attached inbox per tick (each inbox
+// respecting gap_seconds on its own), capped here.
+const MAX_SENDS_PER_CAMPAIGN_TICK = 10;
+
+// Outcomes that made progress on the list without being a hard stop; after
+// one of these a rotation campaign may use its next slot in the same tick.
+const CONTINUE_STATUSES = new Set([
+  "sent",
+  "send_failed",
+  "send_failed_will_retry",
+  "follow_up_failed_will_retry",
+  "follow_up_step_skipped",
+  "follow_up_sequence_complete",
+  "follow_up_stopped_replied",
+  "follow_up_stopped_bounced",
+  "follow_up_paused_ooo",
+  "skipped_unsubscribed",
+  "skipped_suppressed",
+  "skipped_missing_merge_fields",
+]);
+const SEND_CONCURRENCY = 6;
+const SEND_BUDGET_MS = 25_000;
+
+type TickShared = {
+  planByUser: Map<string, Plan>;
+  lastSendKind: Map<string, string>;
+  // Mailboxes already used this tick. Checked and set with no await in
+  // between, so two parallel campaigns can't grab the same sender.
+  claimedSenders: Set<string>;
+  claimDeadline: number;
+};
+
+type TickResult = { status?: string; [k: string]: unknown };
 
 export async function GET(req: NextRequest) {
   if (!cronBearerOk(req.headers.get("authorization"))) return unauth();
@@ -89,14 +158,16 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
   const campaignIds = running.map((c) => c.id);
   const { data: recentLogs } = await db
     .from("send_log")
-    .select("campaign_id, sent_at")
+    .select("campaign_id, sent_at, kind")
     .in("campaign_id", campaignIds)
     .is("error_class", null)
     .order("sent_at", { ascending: false });
   const lastSendMs = new Map<string, number>();
+  const lastSendKind = new Map<string, string>();
   for (const row of recentLogs ?? []) {
     if (!lastSendMs.has(row.campaign_id)) {
       lastSendMs.set(row.campaign_id, new Date(row.sent_at).getTime());
+      lastSendKind.set(row.campaign_id, row.kind);
     }
   }
 
@@ -116,14 +187,29 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
     }
   }
 
-  // Walk the sorted list — first campaign that passes ALL gates (window,
-  // start_at, gap, daily cap incl. warmup) wins the tick.
-  let campaign: typeof running[0] | null = null;
-  let todayCount = 0;
+  // Inbox-rotation pools for every running campaign, in one query.
+  const { data: poolRows } = await db
+    .from("campaign_senders")
+    .select("campaign_id, sender_id")
+    .in("campaign_id", campaignIds);
+  const rotationByCampaign = new Map<string, string[]>();
+  for (const r of poolRows ?? []) {
+    rotationByCampaign.set(r.campaign_id, [...(rotationByCampaign.get(r.campaign_id) ?? []), r.sender_id]);
+  }
+
+  // Walk the sorted list — every campaign that passes ALL gates (window,
+  // start_at, gap, daily cap incl. warmup) gets a send this tick, up to
+  // MAX_CAMPAIGNS_PER_TICK.
+  const eligibleCampaigns: Array<{ campaign: typeof running[0]; todayCount: number; slots: number }> = [];
   const skipped: Array<{ id: string; name: string; reason: string }> = [];
 
   // Plan cache so two campaigns owned by the same user only hit the DB once.
   const planByUser = new Map<string, Plan>();
+  // Plan daily allowance left per user, reserved one send per selected
+  // campaign so parallel sends can't overshoot the plan cap.
+  const userBudget = new Map<string, number>();
+  // Senders whose warmup allowance is already spoken for this tick.
+  const warmupReserved = new Map<string, number>();
 
   for (const c of running) {
     const tz = c.timezone || "Asia/Kolkata";
@@ -136,7 +222,11 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
       skipped.push({ id: c.id, name: c.name, reason: "not_yet_started" });
       continue;
     }
-    const lastTs = lastSendMs.get(c.id);
+    const rotationSize = rotationByCampaign.get(c.id)?.length ?? 0;
+    // Single-sender campaigns space sends per campaign. Rotation campaigns
+    // space them per inbox instead (checked when picking the sender), so N
+    // inboxes can each send once a tick.
+    const lastTs = rotationSize === 0 ? lastSendMs.get(c.id) : undefined;
     if (lastTs) {
       const gapMs = (c.gap_seconds ?? 120) * 1000;
       if (now.getTime() - lastTs < gapMs) {
@@ -157,6 +247,11 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
       continue;
     }
     planByUser.set(c.user_id, quota.plan);
+    const budget = userBudget.get(c.user_id) ?? quota.remaining;
+    if (budget <= 0) {
+      skipped.push({ id: c.id, name: c.name, reason: "plan_daily_cap_reached" });
+      continue;
+    }
 
     const today = dayKey(now, tz);
     const { count } = await db
@@ -165,28 +260,112 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
       .eq("campaign_id", c.id)
       .eq("day", today)
       .is("error_class", null);
-    // Warmup-aware effective cap: min(campaign cap, today's warmup allowance).
-    const warmupInfo = c.sender_id ? warmupMap.get(c.sender_id) : undefined;
-    const warmupCap = warmupInfo ? warmupCapForSender(warmupInfo, now) : Infinity;
-    const effectiveCap = Math.min(c.daily_cap, warmupCap);
-    if ((count ?? 0) >= effectiveCap) {
-      skipped.push({
-        id: c.id,
-        name: c.name,
-        reason: warmupCap < c.daily_cap ? "warmup_cap_reached" : "daily_cap_reached",
-      });
+    if ((count ?? 0) >= c.daily_cap) {
+      skipped.push({ id: c.id, name: c.name, reason: "daily_cap_reached" });
       continue;
     }
+    // Warmup is a property of the mailbox, so count the sender's sends
+    // across ALL campaigns — two campaigns on one new inbox share one
+    // allowance. (Rotation senders are checked per-sender below.)
+    const warmupInfo = c.sender_id && rotationSize === 0 ? warmupMap.get(c.sender_id) : undefined;
+    const warmupCap = warmupInfo ? warmupCapForSender(warmupInfo, now) : Infinity;
+    if (Number.isFinite(warmupCap)) {
+      const { count: senderCount } = await db
+        .from("send_log")
+        .select("*", { count: "exact", head: true })
+        .eq("sender_id", c.sender_id)
+        .eq("day", today)
+        .is("error_class", null);
+      const reserved = warmupReserved.get(c.sender_id) ?? 0;
+      if ((senderCount ?? 0) + reserved >= warmupCap) {
+        skipped.push({ id: c.id, name: c.name, reason: "warmup_cap_reached" });
+        continue;
+      }
+      warmupReserved.set(c.sender_id, reserved + 1);
+    }
 
-    campaign = c;
-    todayCount = count ?? 0;
-    break;
+    const slots =
+      rotationSize === 0
+        ? 1
+        : Math.max(1, Math.min(rotationSize, MAX_SENDS_PER_CAMPAIGN_TICK, budget, c.daily_cap - (count ?? 0)));
+    userBudget.set(c.user_id, budget - slots);
+    eligibleCampaigns.push({ campaign: c, todayCount: count ?? 0, slots });
+    if (eligibleCampaigns.length >= MAX_CAMPAIGNS_PER_TICK) break;
   }
 
-  if (!campaign) {
+  if (eligibleCampaigns.length === 0) {
     return NextResponse.json({ status: "all_throttled", skipped });
   }
 
+  const tickStart = Date.now();
+  const shared: TickShared = {
+    planByUser,
+    lastSendKind,
+    claimedSenders: new Set(),
+    claimDeadline: tickStart + CLAIM_DEADLINE_MS,
+  };
+  const deadline = tickStart + SEND_BUDGET_MS;
+  const perCampaign = await mapWithLimit(eligibleCampaigns, SEND_CONCURRENCY, async ({ campaign, todayCount, slots }) => {
+    // Slots of one campaign run one after another (they'd race for the same
+    // next recipient if run in parallel); campaigns run in parallel.
+    const out: TickResult[] = [];
+    let sends = 0;
+    for (let i = 0; i < slots * 2 && sends < slots; i++) {
+      if (Date.now() > deadline) {
+        if (out.length === 0) out.push({ status: "deferred_time_budget", campaign: campaign.name });
+        break;
+      }
+      if (i > 0) {
+        // The user (or Bounce Shield) may have paused it since the last slot.
+        const { data: fresh } = await db.from("campaigns").select("status").eq("id", campaign.id).maybeSingle();
+        if (fresh?.status !== "running") break;
+      }
+      let r: TickResult;
+      try {
+        const res = await processCampaign(db, now, campaign, todayCount + sends, shared);
+        r = (await res.json()) as TickResult;
+      } catch (e) {
+        // One campaign blowing up must not take the rest of the tick with it.
+        Sentry.captureException(e, {
+          tags: { route: "tick", op: "process_campaign" },
+          contexts: { campaign: { id: campaign.id, name: campaign.name } },
+        });
+        r = { status: "error", campaign: campaign.name, error: e instanceof Error ? e.message : String(e) };
+      }
+      out.push(r);
+      if (r.campaign_paused) break;
+      if (r.status === "sent") {
+        sends++;
+        // Keep the follow-up / first-send interleave alternating across slots.
+        if (typeof r.kind === "string") shared.lastSendKind.set(campaign.id, r.kind);
+      }
+      if (!CONTINUE_STATUSES.has(String(r.status))) break;
+    }
+    return out;
+  });
+  const results = perCampaign.flat();
+
+  const sentCount = results.filter((r) => r.status === "sent").length;
+  return NextResponse.json({
+    // "sent" when anything went out (the dev burst loop keys off this).
+    status: sentCount > 0 ? "sent" : results[0]?.status ?? "idle",
+    sent: sentCount,
+    // Single-campaign ticks keep the old flat shape (to, campaign, kind…).
+    ...(results.length === 1 ? results[0] : {}),
+    ...(sentCount > 0 ? { status: "sent" } : {}),
+    results,
+    skipped,
+  });
+}
+
+async function processCampaign(
+  db: ReturnType<typeof supabaseAdmin>,
+  now: Date,
+  campaign: Record<string, any>,
+  todayCount: number,
+  shared: TickShared
+): Promise<NextResponse> {
+  const { planByUser, lastSendKind, claimedSenders } = shared;
   const tz = campaign.timezone || "Asia/Kolkata";
   const today = dayKey(now, tz);
 
@@ -198,12 +377,10 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
   //     a Scale-tier user split a 10K list across 10 connected Gmails.
   //   - single: fall back to campaigns.sender_id (the historical default).
   //
-  // Note: rotation applies to follow-ups + retries too. Recipients may
-  // therefore see a follow-up come from a different address than the
-  // original — Gmail threading still works (it's Message-ID based) but
-  // the from-line will differ. Sticky-sender per recipient is a future
-  // improvement (would need recipients.sender_id).
-  type SenderRow = {
+  // Follow-ups are sticky: they only go out from recipients.sender_id (the
+  // mailbox that sent the first email). If that sender is attached but
+  // throttled right now, the follow-up waits rather than switching.
+  type SenderRow = SenderServerRow & {
     id: string;
     email: string;
     app_password: string | null;
@@ -225,6 +402,7 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
         refreshToken: decryptSecret(s.oauth_refresh_token),
         accessToken: s.oauth_access_token ? decryptSecret(s.oauth_access_token) : null,
         expiresAt: s.oauth_expires_at ? new Date(s.oauth_expires_at) : null,
+        sendAs: s.send_as_email ?? null,
       };
     }
     if (s.app_password) {
@@ -233,6 +411,8 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
         email: s.email,
         fromName: s.from_name,
         appPassword: decryptSecret(s.app_password),
+        sendAs: s.send_as_email ?? null,
+        ...serversFromRow(s),
       };
     }
     return null;
@@ -254,7 +434,7 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
     const { data: senderDetails } = await db
       .from("senders")
       .select(
-        "id, email, app_password, from_name, auth_method, oauth_refresh_token, oauth_access_token, oauth_expires_at, oauth_status, warmup_enabled, warmup_started_at"
+        `id, email, app_password, from_name, auth_method, oauth_refresh_token, oauth_access_token, oauth_expires_at, oauth_status, warmup_enabled, warmup_started_at, ${SENDER_SERVER_COLUMNS}`
       )
       .in("id", rotationIds);
 
@@ -271,11 +451,24 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
       if (r.sender_id) todayBySender.set(r.sender_id, (todayBySender.get(r.sender_id) ?? 0) + 1);
     }
 
-    // Filter eligible: OAuth status ok, under warmup cap.
+    // Per-inbox spacing for rotation: an inbox that sent (for any campaign)
+    // within gap_seconds is cooling down this tick.
+    const gapMs = (campaign.gap_seconds ?? 120) * 1000;
+    const { data: recentBySender } = await db
+      .from("send_log")
+      .select("sender_id")
+      .in("sender_id", rotationIds)
+      .is("error_class", null)
+      .gt("sent_at", new Date(now.getTime() - gapMs).toISOString());
+    const coolingDown = new Set((recentBySender ?? []).map((r) => r.sender_id as string));
+
+    // Filter eligible: OAuth status ok, under warmup cap, not cooling down.
     type Eligible = { row: SenderRow; sentToday: number; cap: number };
     const eligible: Eligible[] = [];
     for (const s of (senderDetails ?? []) as SenderRow[]) {
       if (s.auth_method === "oauth" && s.oauth_status !== "ok") continue;
+      // Already sending for another campaign this tick, or sent too recently.
+      if (claimedSenders.has(s.id) || coolingDown.has(s.id)) continue;
       const sentToday = todayBySender.get(s.id) ?? 0;
       const cap = warmupCapForSender(
         { warmup_enabled: s.warmup_enabled, warmup_started_at: s.warmup_started_at },
@@ -298,14 +491,18 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
       if (a.sentToday !== b.sentToday) return a.sentToday - b.sentToday;
       return (b.cap - b.sentToday) - (a.cap - a.sentToday);
     });
-    const picked = eligible[0];
+    const picked = eligible.find((e) => !claimedSenders.has(e.row.id));
+    if (!picked) {
+      return NextResponse.json({ status: "senders_busy", campaign: campaign.name });
+    }
+    claimedSenders.add(picked.row.id);
     sender = toSenderCreds(picked.row);
     chosenSenderId = picked.row.id;
   } else if (campaign.sender_id) {
     const { data: s } = await db
       .from("senders")
       .select(
-        "id, email, app_password, from_name, auth_method, oauth_refresh_token, oauth_access_token, oauth_expires_at, oauth_status, warmup_enabled, warmup_started_at"
+        `id, email, app_password, from_name, auth_method, oauth_refresh_token, oauth_access_token, oauth_expires_at, oauth_status, warmup_enabled, warmup_started_at, ${SENDER_SERVER_COLUMNS}`
       )
       .eq("id", campaign.sender_id)
       .maybeSingle();
@@ -316,48 +513,106 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
       if (row.auth_method === "oauth" && row.oauth_status !== "ok") {
         return NextResponse.json({ status: "sender_revoked", sender_id: campaign.sender_id });
       }
+      if (claimedSenders.has(row.id)) {
+        return NextResponse.json({ status: "sender_busy", campaign: campaign.name });
+      }
+      claimedSenders.add(row.id);
       sender = toSenderCreds(row);
       chosenSenderId = row.id;
       eligiblePool.set(row.id, row);
     }
   }
 
-  // ----- pick next thing to send: follow-up > retry > fresh -----
+  // ----- pick next thing to send: due follow-up, then retry, then fresh -----
+  // (alternating with first sends; see the interleave below)
   const nowIso = now.toISOString();
-  let kind: "initial" | "follow_up" | "retry" = "initial";
+  // A pending row whose last_sent_at is recent was claimed by a send that
+  // never recorded its outcome (killed mid-send); don't re-send it yet.
+  const inFlightCutoff = new Date(now.getTime() - IN_FLIGHT_HOLD_MS).toISOString();
+  // Assigned inside pickFollowUp/pickFirstSend; the cast stops TS narrowing
+  // it to "initial" across those closures.
+  let kind = "initial" as "initial" | "follow_up" | "retry";
   let recipient: any = null;
   let step: any = null;
 
-  if (campaign.follow_ups_enabled) {
-    const { data: due } = await db
+  // Follow-ups are a paid feature (plans.features.follow_ups). A user who
+  // downgrades keeps their campaign running for first sends only.
+  const campaignPlan = planByUser.get(campaign.user_id);
+  const followUpsActive =
+    !!campaign.follow_ups_enabled && !!campaignPlan && hasFeature(campaignPlan, "follow_ups");
+  let steps: ConditionalStep[] = [];
+  if (followUpsActive) {
+    const { data: stepsRaw } = await db
+      .from("follow_up_steps")
+      .select("step_number, delay_days, delay_unit, subject, template, condition")
+      .eq("campaign_id", campaign.id)
+      .order("step_number", { ascending: true });
+    steps = (stepsRaw ?? []) as ConditionalStep[];
+  }
+
+  // Returns a response when the tick is consumed without a send (step
+  // skipped / sequence finished); otherwise sets recipient/kind/step.
+  async function pickFollowUp(): Promise<NextResponse | null> {
+    if (!followUpsActive || !campaign) return null;
+    // Rotation senders that are attached but not eligible this tick. Their
+    // recipients' follow-ups wait instead of switching mailbox.
+    const blockedSenderIds = rotationIds.filter((id) => !eligiblePool.has(id));
+    let dueQ = db
       .from("recipients")
       .select("*")
       .eq("campaign_id", campaign.id)
       .eq("status", "sent")
       .not("next_follow_up_at", "is", null)
-      .lte("next_follow_up_at", nowIso)
+      .lte("next_follow_up_at", nowIso);
+    if (blockedSenderIds.length > 0) {
+      dueQ = dueQ.or(`sender_id.is.null,sender_id.not.in.(${blockedSenderIds.join(",")})`);
+    }
+    const { data: due } = await dueQ
       .order("next_follow_up_at", { ascending: true })
       .limit(1)
       .maybeSingle();
     if (due) {
+      // Conditions are evaluated now, when the step is due — not when the
+      // previous email went out.
+      const dueStep: number = due.next_step_number ?? due.follow_up_count + 1;
+      const needsCtx = steps.some((s) => s.step_number >= dueStep && s.condition);
+      const ctx = needsCtx
+        ? await fetchReplyContext(db, due.id)
+        : { hasReplied: false, lastIntent: null };
+      const resolved = resolveDueStep(steps, dueStep, ctx);
+      if (resolved.kind === "end") {
+        await db
+          .from("recipients")
+          .update({ next_follow_up_at: null, next_step_number: null, stop_reason: "completed" })
+          .eq("id", due.id);
+        await emitSequenceStopped(db, { ...due, campaign_id: campaign.id, user_id: campaign.user_id }, "completed", due.follow_up_count ?? 0);
+        return NextResponse.json({ status: "follow_up_sequence_complete", recipient: due.email });
+      }
+      if (resolved.kind === "defer") {
+        let atDate = now;
+        for (const ds of resolved.delaySteps) atDate = addDelay(atDate, ds.delay_days, ds.delay_unit, tz);
+        const at = withJitter(atDate).toISOString();
+        await db
+          .from("recipients")
+          .update({ next_follow_up_at: at, next_step_number: resolved.step.step_number })
+          .eq("id", due.id);
+        return NextResponse.json({
+          status: "follow_up_step_skipped",
+          recipient: due.email,
+          skipped_step: dueStep,
+          next_step: resolved.step.step_number,
+          next_at: at,
+        });
+      }
       recipient = due;
       kind = "follow_up";
-      const { data: s } = await db
-        .from("follow_up_steps")
-        .select("*")
-        .eq("campaign_id", campaign.id)
-        .eq("step_number", due.follow_up_count + 1)
-        .maybeSingle();
-      if (!s) {
-        // no step defined → clear schedule, move on
-        await db.from("recipients").update({ next_follow_up_at: null }).eq("id", due.id);
-        return NextResponse.json({ status: "follow_up_step_missing", recipient: due.email });
-      }
-      step = s;
+      step = resolved.step;
     }
+    return null;
   }
 
-  if (!recipient) {
+  async function pickFirstSend(): Promise<void> {
+    if (!campaign) return;
     const { data: retryR } = await db
       .from("recipients")
       .select("*")
@@ -366,33 +621,53 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
       .gt("retry_count", 0)
       .not("next_retry_at", "is", null)
       .lte("next_retry_at", nowIso)
+      .or(`last_sent_at.is.null,last_sent_at.lt.${inFlightCutoff}`)
       .order("next_retry_at", { ascending: true })
       .limit(1)
       .maybeSingle();
-    if (retryR) { recipient = retryR; kind = "retry"; }
-  }
+    if (retryR) { recipient = retryR; kind = "retry"; return; }
 
-  if (!recipient) {
     const { data: fresh } = await db
       .from("recipients")
       .select("*")
       .eq("campaign_id", campaign.id)
       .eq("status", "pending")
       .eq("retry_count", 0)
+      .or(`last_sent_at.is.null,last_sent_at.lt.${inFlightCutoff}`)
       .order("row_index", { ascending: true })
       .limit(1)
       .maybeSingle();
     if (fresh) { recipient = fresh; kind = "initial"; }
   }
 
+  // Interleave: if the last send was a follow-up, give a first send the
+  // next turn, so a big follow-up backlog can't stall new outreach (and new
+  // outreach can't starve due follow-ups).
+  if (lastSendKind.get(campaign.id) === "follow_up") {
+    await pickFirstSend();
+    if (!recipient) {
+      const r = await pickFollowUp();
+      if (r) return r;
+    }
+  } else {
+    const r = await pickFollowUp();
+    if (r) return r;
+    if (!recipient) await pickFirstSend();
+  }
+
   if (!recipient) {
-    // Check if any follow-ups are still pending in the future — if so, keep running
-    const { count: upcoming } = await db
-      .from("recipients")
-      .select("*", { count: "exact", head: true })
-      .eq("campaign_id", campaign.id)
-      .eq("status", "sent")
-      .not("next_follow_up_at", "is", null);
+    // Check if any follow-ups are still pending in the future — if so, keep
+    // running. With follow-ups off (or not on the plan) stale schedules
+    // don't count, otherwise the campaign would sit in "waiting" forever.
+    const { count: upcomingRaw } = followUpsActive
+      ? await db
+          .from("recipients")
+          .select("*", { count: "exact", head: true })
+          .eq("campaign_id", campaign.id)
+          .eq("status", "sent")
+          .not("next_follow_up_at", "is", null)
+      : { count: 0 };
+    const upcoming = upcomingRaw ?? 0;
     const { count: pendingRetries } = await db
       .from("recipients")
       .select("*", { count: "exact", head: true })
@@ -409,7 +684,7 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
           name: campaign.name,
           finished_at: nowIso,
         },
-      });
+      }, { queueOnly: true });
       return NextResponse.json({ status: "campaign_finished", campaign: campaign.name });
     }
     return NextResponse.json({ status: "waiting", upcoming_follow_ups: upcoming ?? 0 });
@@ -423,13 +698,23 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
   if (recipient.sender_id && recipient.sender_id !== chosenSenderId) {
     const sticky = eligiblePool.get(recipient.sender_id);
     if (sticky) {
+      if (claimedSenders.has(sticky.id)) {
+        // Another campaign grabbed that mailbox after we built the pool.
+        // Follow-ups wait for it; a first send just goes next tick.
+        return NextResponse.json({ status: "sender_busy", campaign: campaign.name, to: recipient.email });
+      }
       const candidate = toSenderCreds(sticky);
       if (candidate) {
+        if (chosenSenderId) claimedSenders.delete(chosenSenderId);
+        claimedSenders.add(sticky.id);
         sender = candidate;
         chosenSenderId = sticky.id;
       }
     }
   }
+
+  // Identity used by webhook events below.
+  const rcpt = { id: recipient.id as string, email: recipient.email as string, campaign_id: campaign.id as string, user_id: campaign.user_id as string };
 
   // skip if this user has unsubscribed this address (per-user list)
   const { data: unsub } = await db
@@ -442,10 +727,203 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
     await db.from("recipients").update({ status: "unsubscribed", next_follow_up_at: null }).eq("id", recipient.id);
     return NextResponse.json({ status: "skipped_unsubscribed", to: recipient.email });
   }
+  // Do-not-contact list (bounced addresses, blocked domains), all campaigns.
+  const suppressed = await findSuppression(db, campaign.user_id, recipient.email);
+  if (suppressed) {
+    await db
+      .from("recipients")
+      .update(
+        kind === "follow_up"
+          ? { next_follow_up_at: null, stop_reason: "suppressed" }
+          : { status: "skipped", stop_reason: "suppressed", next_retry_at: null, error: `suppressed_${suppressed.kind}` }
+      )
+      .eq("id", recipient.id);
+    return NextResponse.json({ status: "skipped_suppressed", to: recipient.email, by: suppressed.kind });
+  }
+
+  // ---- pre-send reply / bounce / out-of-office guard (follow-ups only) ----
+  // Ask the mailbox directly instead of trusting the 5-minute reply poll.
+  // Fails closed: if we can't check, we don't send and try again later.
+  if (kind === "follow_up" && sender) {
+    const since = new Date(
+      new Date(recipient.sent_at ?? recipient.last_sent_at ?? nowIso).getTime() - 60_000
+    );
+    let verdict: Awaited<ReturnType<typeof checkBeforeFollowUp>>["verdict"] | undefined;
+    // Which inbox the guard is reading, so a failure is pinned on that one.
+    let checking: { id: string | null; email: string } = { id: chosenSenderId, email: sender.email };
+    try {
+      // The reply lands in the inbox that sent the first email. Normally
+      // that's the sender we're about to use; if the campaign switched
+      // sender since, check the original inbox too.
+      const inboxes: Array<{ id: string | null; creds: SenderCreds }> = [{ id: chosenSenderId, creds: sender }];
+      if (recipient.sender_id && recipient.sender_id !== chosenSenderId) {
+        const original = await loadSenderCreds(db, recipient.sender_id);
+        if (original?.creds && !original.oauthRevoked) inboxes.push({ id: original.id, creds: original.creds });
+      }
+      for (const inbox of inboxes) {
+        checking = { id: inbox.id, email: inbox.creds.email };
+        const out = await checkBeforeFollowUp({
+          sender: inbox.creds,
+          recipientEmail: recipient.email,
+          since,
+          now,
+        });
+        if (inbox.id) await persistRefreshedToken(db, inbox.id, out.tokensRefreshed);
+        if (!verdict || verdict.kind === "clear" || (verdict.kind === "ooo" && out.verdict.kind !== "clear")) {
+          verdict = out.verdict;
+        }
+        if (verdict.kind === "replied" || verdict.kind === "bounced") break;
+      }
+    } catch (e) {
+      const errorClass = classifyError(e);
+      const msg = e instanceof Error ? e.message : String(e);
+      if (checking.id && errorClass === "auth_revoked") {
+        await markSenderRevoked(db, {
+          sender_id: checking.id,
+          sender_email: checking.email,
+          user_id: campaign.user_id,
+        });
+      }
+      Sentry.captureException(e, {
+        tags: { route: "tick", op: "followup_guard", error_class: errorClass },
+        contexts: { recipient: { id: recipient.id }, inbox: { id: checking.id, email: checking.email } },
+      });
+      // Retry with backoff, but don't loop forever on a permanent problem
+      // (IMAP disabled, wrong IMAP host): after GUARD_MAX_ATTEMPTS the
+      // sequence stops with a visible reason instead of hanging silently.
+      const attempts = (recipient.follow_up_attempts ?? 0) + 1;
+      const giveUp = attempts >= GUARD_MAX_ATTEMPTS;
+      const retryAt = new Date(now.getTime() + 30 * 60 * 1000 * attempts).toISOString();
+      const error = `Couldn't check ${checking.email} for a reply before the follow-up: ${msg}`.slice(0, 500);
+      await db
+        .from("recipients")
+        .update(
+          giveUp
+            ? { next_follow_up_at: null, stop_reason: "guard_failed", follow_up_attempts: attempts, error }
+            : { next_follow_up_at: retryAt, follow_up_attempts: attempts, error }
+        )
+        .eq("id", recipient.id);
+      if (giveUp) await emitSequenceStopped(db, rcpt, "guard_failed", recipient.follow_up_count ?? 0);
+      return NextResponse.json({
+        status: giveUp ? "follow_up_stopped_guard_failed" : "follow_up_guard_failed",
+        to: recipient.email,
+        error_class: errorClass,
+        ...(giveUp ? {} : { retry_at: retryAt }),
+      });
+    }
+
+    const guard: GuardVerdict = verdict ?? { kind: "clear" };
+    const owner = { recipient_id: recipient.id, campaign_id: campaign.id, user_id: campaign.user_id };
+    if (guard.kind === "replied") {
+      const replyId = await saveGuardReply(db, owner, guard.message, false, now);
+      await db
+        .from("recipients")
+        .update({
+          status: "replied",
+          replied_at: (guard.message.date ?? now).toISOString(),
+          next_follow_up_at: null,
+          stop_reason: "replied",
+        })
+        .eq("id", recipient.id)
+        .eq("status", "sent");
+      if (replyId) {
+        await fireWebhook(db, {
+          user_id: campaign.user_id,
+          event_type: "reply.received",
+          event_id: replyId,
+          payload: {
+            reply_id: replyId,
+            campaign_id: campaign.id,
+            recipient_id: recipient.id,
+            from_email: guard.message.from,
+            subject: guard.message.subject,
+            snippet: guard.message.snippet,
+            received_at: guard.message.date?.toISOString() ?? null,
+          },
+        }, { queueOnly: true });
+      }
+      await emitSequenceStopped(db, rcpt, "replied", recipient.follow_up_count ?? 0);
+      const domainStopped = campaign.stop_on_domain_reply !== false
+        ? await stopDomainAfterReply(db, campaign.id, { id: recipient.id, email: recipient.email })
+        : 0;
+      return NextResponse.json({
+        status: "follow_up_stopped_replied",
+        to: recipient.email,
+        domain_stopped: domainStopped,
+      });
+    }
+    if (guard.kind === "bounced") {
+      await db
+        .from("recipients")
+        .update({
+          status: "bounced",
+          next_follow_up_at: null,
+          stop_reason: "bounced",
+          error: `bounce: ${guard.message.subject ?? "delivery failure"}`.slice(0, 500),
+        })
+        .eq("id", recipient.id)
+        .eq("status", "sent");
+      await suppressEmail(db, campaign.user_id, recipient.email, "bounced", campaign.id);
+      await emitBounced(db, rcpt, guard.message.subject);
+      await emitSequenceStopped(db, rcpt, "bounced", recipient.follow_up_count ?? 0);
+      const shielded = await maybePauseForBounces(db, campaign.id);
+      return NextResponse.json({
+        status: "follow_up_stopped_bounced",
+        to: recipient.email,
+        ...(shielded ? { campaign_paused: "bounce_rate" } : {}),
+      });
+    }
+    if (guard.kind === "sender_auth") {
+      // A receiver bounced an earlier email because our domain failed
+      // SPF/DKIM/DMARC. Same handling as a synchronous rejection.
+      await db
+        .from("campaigns")
+        .update({ status: "paused", paused_reason: "sender_auth" })
+        .eq("id", campaign.id)
+        .eq("status", "running");
+      await emitCampaignPaused(db, campaign as { id: string; user_id: string; name: string }, "sender_auth");
+      return NextResponse.json({
+        status: "campaign_paused_sender_auth",
+        campaign: campaign.name,
+        campaign_paused: "sender_auth",
+        to: recipient.email,
+      });
+    }
+    if (guard.kind === "ooo") {
+      await saveGuardReply(db, owner, guard.message, true, now);
+      await db
+        .from("recipients")
+        .update({ next_follow_up_at: guard.resumeAt.toISOString() })
+        .eq("id", recipient.id);
+      return NextResponse.json({
+        status: "follow_up_paused_ooo",
+        to: recipient.email,
+        resume_at: guard.resumeAt.toISOString(),
+      });
+    }
+  }
+
+  // sender is null only if the campaign has no sender_id AND no rotation.
+  // Checked before claiming so a misconfigured campaign doesn't park rows.
+  if (!sender) {
+    return NextResponse.json({
+      status: "no_sender_configured",
+      campaign: campaign.name,
+      message: "Campaign has no sender attached. Pick one on /app/senders or in the campaign editor.",
+    });
+  }
+
+  // Too late in the tick to start a send that must finish inside maxDuration.
+  if (Date.now() > shared.claimDeadline) {
+    return NextResponse.json({ status: "deferred_time_budget", campaign: campaign.name });
+  }
 
   // ATOMIC CLAIM — optimistic compare-and-set on last_sent_at so only one
-  // concurrent tick wins and sends this recipient. Prevents duplicate-sends
-  // if pg_cron + manual curl fire close together or SMTP is slow.
+  // concurrent tick wins and sends this recipient. It also marks the row
+  // in flight: pending rows with a recent last_sent_at are skipped by the
+  // pickers, and a claimed follow-up is pushed IN_FLIGHT_HOLD_MS out. Every
+  // outcome path below overwrites these, so only a killed process leaves
+  // them, and then the row waits instead of being sent twice.
   {
     const prior = recipient.last_sent_at;
     let q = db
@@ -456,7 +934,10 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
     if (kind === "follow_up") {
       q = db
         .from("recipients")
-        .update({ last_sent_at: nowIso })
+        .update({
+          last_sent_at: nowIso,
+          next_follow_up_at: new Date(now.getTime() + IN_FLIGHT_HOLD_MS).toISOString(),
+        })
         .eq("id", recipient.id)
         .eq("status", "sent")
         .eq("follow_up_count", recipient.follow_up_count);
@@ -471,10 +952,6 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
 
   // ---- render ----
   const vars = { ...(recipient.vars ?? {}), Name: recipient.name, Company: recipient.company };
-  // For the "Re:" prefix decision, look at the original campaign subject (the
-  // one the thread was opened with). A step-level subject override doesn't
-  // change whether this is a reply to the original thread.
-  const threadSubject = campaign.subject;
 
   // ---- A/B variant pick (initial / retry sends only) ----
   // Follow-ups inherit the recipient's pinned variant via recipients.variant_id;
@@ -483,7 +960,10 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
   let effectiveSubject: string = campaign.subject;
   let effectiveTemplate: string = campaign.template;
   let pickedVariantId: string | null = recipient.variant_id ?? null;
-  if (kind !== "follow_up" && isVariantArray(campaign.variants)) {
+  // A/B testing is plan-gated here too: variants can be written directly
+  // through RLS, and a downgraded plan stops splitting (main copy is used).
+  const abAllowed = !!planByUser.get(campaign.user_id) && hasFeature(planByUser.get(campaign.user_id)!, "a_b_testing");
+  if (kind !== "follow_up" && abAllowed && isVariantArray(campaign.variants)) {
     const variants = campaign.variants as Variant[];
     const sticky = pickedVariantId
       ? variants.find((v) => v.id === pickedVariantId) ?? null
@@ -496,8 +976,14 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
     }
   }
 
-  const rawSubjectPreAi = kind === "follow_up" && step.subject ? step.subject : effectiveSubject;
-  const templateSrcPreAi = kind === "follow_up" ? step.template : effectiveTemplate;
+  // Spintax is resolved first, seeded per recipient + step, so a retry or
+  // a later preview produces the same wording that was actually sent.
+  const spinSeed = `${recipient.id}:${kind === "follow_up" ? step.step_number : 0}`;
+  const rawSubjectPreAi = spin(
+    kind === "follow_up" && step.subject ? step.subject : effectiveSubject,
+    `${spinSeed}:subject`
+  );
+  const templateSrcPreAi = spin(kind === "follow_up" ? step.template : effectiveTemplate, spinSeed);
 
   // ---- AI personalization ({{ai:...}} tags) ----
   // Plan-gated. Free / Starter users with AI tags in their template get
@@ -521,8 +1007,10 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
   const rawSubject = personalizedSubject.rendered;
   const templateSrc = personalizedBody.rendered;
 
+  // Threaded follow-ups always carry exactly one "Re:" on the subject that
+  // actually goes out (step override or original).
   const subject =
-    kind === "follow_up" && recipient.message_id && !/^re:\s/i.test(threadSubject)
+    kind === "follow_up" && recipient.message_id
       ? `Re: ${rawSubject.replace(/^re:\s*/i, "")}`
       : rawSubject;
 
@@ -541,8 +1029,9 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
       if (kind === "follow_up") {
         await db
           .from("recipients")
-          .update({ next_follow_up_at: null, error: errMsg })
+          .update({ next_follow_up_at: null, error: errMsg, stop_reason: "merge_failed" })
           .eq("id", recipient.id);
+        await emitSequenceStopped(db, rcpt, "merge_failed", recipient.follow_up_count ?? 0);
       } else {
         await db
           .from("recipients")
@@ -574,12 +1063,19 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
   const body = render(templateSrc, vars);
 
   const base = appUrl();
-  const unsubUrl = campaign.unsubscribe_enabled ? `${base}/u/${signToken("u", recipient.id)}` : undefined;
+  const unsubToken = campaign.unsubscribe_enabled ? signToken("u", recipient.id) : null;
+  // Footer link → human confirm page. Header → RFC 8058 one-click POST
+  // endpoint (the page route can't accept POST).
+  const unsubUrl = unsubToken ? `${base}/u/${unsubToken}` : undefined;
+  const oneClickUnsubUrl = unsubToken ? `${base}/api/unsubscribe?token=${unsubToken}` : undefined;
   const openPixelUrl = campaign.tracking_enabled
     ? `${base}/api/t/o/${signToken("o", recipient.id)}.gif`
     : undefined;
   const wrapUrl = campaign.tracking_enabled
-    ? (url: string) => `${base}/api/t/c/${signToken("c", recipient.id)}?u=${encodeURIComponent(url)}`
+    ? (url: string) => {
+        const t = signToken("c", recipient.id);
+        return `${base}/api/t/c/${t}?u=${encodeURIComponent(url)}&s=${signClickUrl(t, url)}`;
+      }
     : undefined;
 
   const html = toHtml(body, { wrapUrl, openPixelUrl, unsubscribeUrl: unsubUrl });
@@ -603,8 +1099,8 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
 
   // ---- headers ----
   const headers: Record<string, string> = {};
-  if (unsubUrl) {
-    headers["List-Unsubscribe"] = `<${unsubUrl}>`;
+  if (oneClickUnsubUrl) {
+    headers["List-Unsubscribe"] = `<${oneClickUnsubUrl}>`;
     headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click";
   }
   // Thread follow-ups as replies to the initial message so Gmail groups them.
@@ -618,20 +1114,17 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
   }
 
   // ---- send ----
-  // sender is null only if the campaign has no sender_id AND no rotation.
-  // We bail with a status the operator can act on, rather than mailing
-  // from anywhere unexpected.
-  if (!sender) {
-    return NextResponse.json({
-      status: "no_sender_configured",
-      campaign: campaign.name,
-      message: "Campaign has no sender attached. Pick one on /app/senders or in the campaign editor.",
-    });
-  }
   let sentMessageId: string | null = null;
+  let sentThreadId: string | null = null;
+  // Gmail thread ids are per-mailbox, so only reuse it from the same sender.
+  const threadId =
+    kind === "follow_up" && recipient.gmail_thread_id && recipient.sender_id === chosenSenderId
+      ? recipient.gmail_thread_id
+      : null;
   try {
-    const result = await sendMail({ to: recipient.email, subject, text, html, sender, attachments, headers });
+    const result = await sendMail({ to: recipient.email, subject, text, html, sender, attachments, headers, threadId });
     sentMessageId = result.messageId;
+    sentThreadId = result.threadId ?? null;
     // Persist any refreshed OAuth access token so the next tick doesn't have
     // to round-trip through Google again. Update the sender that actually
     // ran (chosenSenderId), which may differ from campaign.sender_id under
@@ -668,8 +1161,99 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
         recipient: { id: recipient.id, email: recipient.email },
       },
     });
-    // retry logic (applies to initial + retry kinds; follow-up failures just log and move on)
-    if (kind !== "follow_up" && campaign.retry_enabled && recipient.retry_count < campaign.max_retries) {
+    // The receiving server rejected the sender's domain authentication
+    // (SPF/DKIM/DMARC). Every further send would bounce the same way and burn
+    // reputation, so pause the campaign and leave the recipient untouched;
+    // the user fixes DNS (Senders → Check DNS) and resumes.
+    if (errorClass === "sender_auth") {
+      await db
+        .from("campaigns")
+        .update({ status: "paused", paused_reason: "sender_auth" })
+        .eq("id", campaign.id)
+        .eq("status", "running");
+      await emitCampaignPaused(db, campaign as { id: string; user_id: string; name: string }, "sender_auth");
+      await db
+        .from("recipients")
+        .update(
+          kind === "follow_up"
+            ? { error: `Paused: receiver rejected sender authentication. ${msg}`.slice(0, 500), next_follow_up_at: nowIso }
+            : { error: `Paused: receiver rejected sender authentication. ${msg}`.slice(0, 500), last_sent_at: null }
+        )
+        .eq("id", recipient.id);
+      await db.from("send_log").insert({
+        campaign_id: campaign.id,
+        recipient_id: recipient.id,
+        user_id: campaign.user_id,
+        sender_id: chosenSenderId,
+        kind,
+        step_number: kind === "follow_up" ? step.step_number : null,
+        sent_at: nowIso,
+        day: today,
+        error_class: errorClass,
+      });
+      return NextResponse.json({
+        status: "campaign_paused_sender_auth",
+        campaign: campaign.name,
+        to: recipient.email,
+        error: msg,
+      });
+    }
+    // Follow-up failures: auth problems wait for the mailbox to be fixed
+    // (the sequence isn't the recipient's fault); transient errors retry the
+    // same step up to FOLLOW_UP_MAX_ATTEMPTS; a rejected address ends it.
+    if (kind === "follow_up") {
+      const attempts = (recipient.follow_up_attempts ?? 0) + 1;
+      const authProblem = errorClass === "auth_revoked" || errorClass === "auth_failed";
+      const permanent = isHardBounce(e);
+      const retry = !permanent && (authProblem || attempts < FOLLOW_UP_MAX_ATTEMPTS);
+      const retryAt = new Date(
+        now.getTime() + (authProblem ? 60 : 30 * attempts) * 60 * 1000
+      ).toISOString();
+      await db
+        .from("recipients")
+        .update(
+          retry
+            ? {
+                next_follow_up_at: retryAt,
+                follow_up_attempts: authProblem ? recipient.follow_up_attempts ?? 0 : attempts,
+                error: msg,
+              }
+            : {
+                status: permanent ? "bounced" : recipient.status,
+                next_follow_up_at: null,
+                stop_reason: permanent ? "bounced" : "send_failed",
+                error: msg,
+              }
+        )
+        .eq("id", recipient.id);
+      if (permanent) {
+        await suppressEmail(db, campaign.user_id, recipient.email, "bounced", campaign.id);
+        await emitBounced(db, rcpt, msg);
+        await maybePauseForBounces(db, campaign.id);
+      }
+      if (!retry) await emitSequenceStopped(db, rcpt, permanent ? "bounced" : "send_failed", recipient.follow_up_count ?? 0);
+      await db.from("send_log").insert({
+        campaign_id: campaign.id,
+        recipient_id: recipient.id,
+        user_id: campaign.user_id,
+        sender_id: chosenSenderId,
+        kind,
+        step_number: step.step_number,
+        sent_at: nowIso,
+        day: today,
+        error_class: errorClass,
+      });
+      return NextResponse.json({
+        status: retry ? "follow_up_failed_will_retry" : "send_failed",
+        to: recipient.email,
+        kind,
+        error: msg,
+        error_class: errorClass,
+        ...(retry ? { retry_at: retryAt } : {}),
+      });
+    }
+    // retry logic for initial + retry kinds
+    if (campaign.retry_enabled && !isHardBounce(e) && recipient.retry_count < campaign.max_retries) {
       const nextRetry = new Date(now.getTime() + 30 * 60 * 1000 * (recipient.retry_count + 1));
       await db
         .from("recipients")
@@ -677,6 +1261,7 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
           retry_count: recipient.retry_count + 1,
           next_retry_at: nextRetry.toISOString(),
           error: msg,
+          last_sent_at: null, // not in flight any more
         })
         .eq("id", recipient.id);
       return NextResponse.json({
@@ -687,15 +1272,18 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
         error_class: errorClass,
       }, { status: 200 });
     }
-    // no retry — mark failed
+    // no retry — mark failed (bounced + suppressed when the address itself
+    // was rejected, so no other campaign mails it again)
+    const hard = isHardBounce(e);
     await db
       .from("recipients")
-      .update({
-        status: kind === "follow_up" ? recipient.status : "failed",
-        next_follow_up_at: kind === "follow_up" ? null : recipient.next_follow_up_at,
-        error: msg,
-      })
+      .update(hard ? { status: "bounced", stop_reason: "bounced", error: msg } : { status: "failed", error: msg })
       .eq("id", recipient.id);
+    if (hard) {
+      await suppressEmail(db, campaign.user_id, recipient.email, "bounced", campaign.id);
+      await emitBounced(db, rcpt, msg);
+      await maybePauseForBounces(db, campaign.id);
+    }
     // Log the failure into send_log so admin metrics group by error_class
     // can compute error rate without scanning recipients.
     await db.from("send_log").insert({
@@ -704,7 +1292,7 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
       user_id: campaign.user_id,
       sender_id: chosenSenderId,
       kind,
-      step_number: kind === "follow_up" ? step.step_number : null,
+      step_number: null,
       sent_at: nowIso,
       day: today,
       error_class: errorClass,
@@ -725,45 +1313,54 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
     if (sentMessageId && !recipient.message_id) {
       update.message_id = sentMessageId.startsWith("<") ? sentMessageId : `<${sentMessageId}>`;
     }
-    // Sticky-sender pin: record which sender ran the initial so future
-    // follow-ups land from the same from-line. Only set on initial; if
-    // the row already has a sender_id we don't overwrite (a later
-    // rotation re-pin would confuse the recipient).
-    if (kind === "initial" && chosenSenderId && !recipient.sender_id) {
+    if (sentThreadId && !recipient.gmail_thread_id) {
+      update.gmail_thread_id = sentThreadId;
+    }
+    // Sticky-sender pin: record which sender delivered the first email
+    // (first try or a retry) so follow-ups come from the same from-line and
+    // Gmail thread. Never overwritten once set.
+    if (chosenSenderId && !recipient.sender_id) {
       update.sender_id = chosenSenderId;
     }
     // A/B variant pin — same logic. If the campaign uses variants and
     // this is the first send, record which variant the recipient saw
     // so follow-ups (and stats) can attribute correctly.
-    if (kind === "initial" && pickedVariantId && !recipient.variant_id) {
+    if (pickedVariantId && !recipient.variant_id) {
       update.variant_id = pickedVariantId;
     }
-    // Schedule first follow-up if enabled, honouring per-step conditions.
-    // Conditional steps may skip ahead (eg "only if no_reply") — we walk
-    // the sequence and pick the first eligible step.
-    if (campaign.follow_ups_enabled) {
-      const nextTs = await scheduleNextFollowUp(db, campaign.id, recipient.id, 1, now);
-      if (nextTs) update.next_follow_up_at = nextTs;
+    // Schedule the first follow-up. Its condition is checked when it
+    // comes due, not now.
+    const first = followUpsActive ? stepAfter(steps, 0) : null;
+    if (first) {
+      update.next_follow_up_at = withJitter(addDelay(now, first.delay_days, first.delay_unit, tz)).toISOString();
+      update.next_step_number = first.step_number;
     }
     await db.from("recipients").update(update).eq("id", recipient.id);
   } else if (kind === "follow_up") {
-    const nextTs = await scheduleNextFollowUp(
-      db,
-      campaign.id,
-      recipient.id,
-      recipient.follow_up_count + 2,
-      now
-    );
+    const next = stepAfter(steps, step.step_number);
     await db
       .from("recipients")
       .update({
         follow_up_count: recipient.follow_up_count + 1,
         last_sent_at: nowIso,
-        next_follow_up_at: nextTs,
+        next_follow_up_at: next
+          ? withJitter(addDelay(now, next.delay_days, next.delay_unit, tz)).toISOString()
+          : null,
+        next_step_number: next?.step_number ?? null,
+        ...(next ? {} : { stop_reason: "completed" }),
+        follow_up_attempts: 0,
         error: null,
       })
       .eq("id", recipient.id);
+    if (!next) await emitSequenceStopped(db, rcpt, "completed", recipient.follow_up_count ?? 0);
   }
+
+  await emitEmailSent(db, rcpt, {
+    kind,
+    step: kind === "follow_up" ? step.step_number : 0,
+    sender_email: sender.email,
+    message_id: sentMessageId,
+  });
 
   await db.from("send_log").insert({
     campaign_id: campaign.id,
@@ -775,6 +1372,17 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
     sent_at: nowIso,
     day: today,
   });
+
+  // A/B auto-pick: re-evaluate every 20 first sends once a threshold is set.
+  if (
+    kind !== "follow_up" &&
+    pickedVariantId &&
+    !campaign.ab_winner_id &&
+    campaign.ab_winner_threshold &&
+    (todayCount + 1) % 20 === 0
+  ) {
+    await maybeAutoPromoteWinner(db, campaign as Parameters<typeof maybeAutoPromoteWinner>[1]);
+  }
 
   // Per-user daily usage counter (gated against plan.daily_cap on the next
   // tick). Off by ±1 under heavy contention is fine — send_log is the
@@ -788,29 +1396,4 @@ async function runTick(db: ReturnType<typeof supabaseAdmin>, now: Date): Promise
     campaign: campaign.name,
     sent_today: (todayCount ?? 0) + 1,
   });
-}
-
-// Schedule the next eligible follow-up for `recipient_id`, starting from
-// `fromStep`. Walks the user's full sequence and picks the first step
-// whose `condition` matches the recipient's current reply state. Returns
-// the ISO timestamp to set on `next_follow_up_at`, or null when no
-// remaining step applies (e.g. all gated by "no_reply" but they replied).
-async function scheduleNextFollowUp(
-  db: ReturnType<typeof supabaseAdmin>,
-  campaignId: string,
-  recipientId: string,
-  fromStep: number,
-  now: Date
-): Promise<string | null> {
-  const { data: stepsRaw } = await db
-    .from("follow_up_steps")
-    .select("step_number, delay_days, subject, template, condition")
-    .eq("campaign_id", campaignId)
-    .order("step_number", { ascending: true });
-  const steps = (stepsRaw ?? []) as ConditionalStep[];
-  if (steps.length === 0) return null;
-  const ctx = await fetchReplyContext(db, recipientId);
-  const next = nextEligibleStep(steps, fromStep, ctx);
-  if (!next) return null;
-  return new Date(now.getTime() + next.delayDays * 86_400_000).toISOString();
 }

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
-import { verifyToken } from "@/lib/tokens";
+import { requestOrigin, verifyToken } from "@/lib/tokens";
 import { dispatch as fireWebhook } from "@/lib/webhooks";
 
 export const runtime = "nodejs";
@@ -44,18 +44,27 @@ async function process(token: string) {
   return { ok: true };
 }
 
+// Two callers:
+//   - RFC 8058 one-click: Gmail/Yahoo POST to the List-Unsubscribe URL
+//     (`/api/unsubscribe?token=…`) with a form body `List-Unsubscribe=One-Click`.
+//     Must return 2xx with no redirect.
+//   - The /u/[token] confirm page, which POSTs JSON `{ token }`.
 export async function POST(req: NextRequest) {
-  const { token } = await req.json().catch(() => ({ token: "" }));
+  let token = req.nextUrl.searchParams.get("token") || "";
+  if (!token && (req.headers.get("content-type") ?? "").includes("application/json")) {
+    const body = await req.json().catch(() => null);
+    token = typeof body?.token === "string" ? body.token : "";
+  }
   const res = await process(token);
   if (!res.ok) return NextResponse.json({ error: res.msg }, { status: res.status });
   return NextResponse.json({ ok: true });
 }
 
-// Gmail/Outlook one-click List-Unsubscribe-Post sends POST with no body — handled above.
-// Some clients also do a GET, so redirect them to the page.
+// GET never unsubscribes: mail security scanners pre-fetch every URL in a
+// message, which would silently opt recipients out (RFC 8058 §3.1). Send
+// the visitor to the confirm page instead.
 export async function GET(req: NextRequest) {
   const token = req.nextUrl.searchParams.get("token") || "";
-  const res = await process(token);
-  const url = new URL(`/u/${token}`, req.nextUrl.origin);
-  return NextResponse.redirect(url, res.ok ? 302 : 303);
+  const url = new URL(`/u/${encodeURIComponent(token)}`, requestOrigin(req));
+  return NextResponse.redirect(url, 303);
 }

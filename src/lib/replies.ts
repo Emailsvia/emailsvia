@@ -1,5 +1,6 @@
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
+import type { HostConfig } from "./mail";
 
 export type IncomingMessage = {
   from: string;
@@ -8,6 +9,7 @@ export type IncomingMessage = {
   body_text: string | null;
   body_html: string | null;
   date: Date | null;
+  message_id: string | null;       // this message's own normalized <message-id>
   in_reply_to: string | null;      // normalized <message-id>
   references: string[];             // normalized <message-id>s
   is_auto_reply: boolean;           // vacation responders, out-of-office
@@ -100,23 +102,40 @@ function detectBounce(
   return false;
 }
 
-// Poll Gmail over IMAP for inbound messages. Capped at `maxMessages` newest
-// within the `since` window so the cron function doesn't time out on active
-// inboxes (Vercel 60s budget).
+type ImapCreds = { email: string; appPassword: string; imap?: HostConfig };
+
+function makeImapClient(creds: ImapCreds) {
+  // Absent `imap` = Gmail app-password sender. Literal kept here (not
+  // imported from mail.ts) to avoid a runtime import cycle.
+  const imap = creds.imap ?? { host: "imap.gmail.com", port: 993, secure: true };
+  return new ImapFlow({
+    host: imap.host,
+    port: imap.port,
+    secure: imap.secure,
+    // Strip spaces only from Gmail app passwords; custom passwords verbatim.
+    auth: { user: creds.email, pass: creds.imap ? creds.appPassword : creds.appPassword.replace(/\s+/g, "") },
+    logger: false,
+    socketTimeout: 25_000,
+  });
+}
+
+// Connect + login + logout. Throws on bad host / bad password.
+export async function verifyImap(creds: ImapCreds): Promise<void> {
+  const client = makeImapClient(creds);
+  await client.connect();
+  try { await client.logout(); } catch {}
+}
+
+// Poll an inbox over IMAP (Gmail or a custom host) for inbound messages.
+// Capped at `maxMessages` newest within the `since` window so the cron
+// function doesn't time out on active inboxes (Vercel 60s budget).
 export async function fetchIncomingMessages(
-  creds: { email: string; appPassword: string },
+  creds: ImapCreds,
   since: Date,
   opts: { maxMessages?: number } = {}
 ): Promise<IncomingMessage[]> {
   const max = opts.maxMessages ?? 500;
-  const client = new ImapFlow({
-    host: "imap.gmail.com",
-    port: 993,
-    secure: true,
-    auth: { user: creds.email, pass: creds.appPassword.replace(/\s+/g, "") },
-    logger: false,
-    socketTimeout: 25_000,
-  });
+  const client = makeImapClient(creds);
 
   const out: IncomingMessage[] = [];
   await client.connect();
@@ -126,52 +145,115 @@ export async function fetchIncomingMessages(
     if (!uids || uids.length === 0) return [];
     const slice = (uids as number[]).slice(-max);
     for await (const msg of client.fetch(slice, { envelope: true, source: true })) {
-      const addr = msg.envelope?.from?.[0]?.address?.toLowerCase();
-      if (!addr) continue;
-      let bodyText: string | null = null;
-      let bodyHtml: string | null = null;
-      let snippet: string | null = null;
-      let inReplyTo: string | null = null;
-      let references: string[] = [];
-      let isAutoReply = false;
-      let isBounce = false;
-      const subject = msg.envelope?.subject ?? null;
-      if (msg.source) {
-        try {
-          const parsed = await simpleParser(msg.source as Buffer);
-          bodyText = parsed.text ?? null;
-          bodyHtml = typeof parsed.html === "string" ? parsed.html : null;
-          if (bodyText) {
-            snippet = bodyText.replace(/\s+/g, " ").trim().slice(0, 200);
-          }
-          // mailparser exposes these as typed fields already
-          inReplyTo = normalizeMsgId(typeof parsed.inReplyTo === "string" ? parsed.inReplyTo : null);
-          if (Array.isArray(parsed.references)) {
-            references = parsed.references.map((r) => normalizeMsgId(r)).filter((x): x is string => !!x);
-          } else if (typeof parsed.references === "string") {
-            references = parsed.references
-              .split(/\s+/)
-              .map((r) => normalizeMsgId(r))
-              .filter((x): x is string => !!x);
-          }
-          isAutoReply = detectAutoReply(parsed.headers, subject, addr);
-          isBounce = detectBounce(parsed.headers, subject, addr);
-        } catch {
-          // ignore parse errors, keep envelope info only
-        }
+      const parsed = await toIncoming(msg);
+      if (parsed) out.push(parsed);
+    }
+  } finally {
+    try { await client.logout(); } catch {}
+  }
+  return out;
+}
+
+type FetchedImapMessage = {
+  envelope?: { from?: { address?: string }[]; subject?: string; date?: Date };
+  source?: Buffer;
+};
+
+async function toIncoming(msg: FetchedImapMessage): Promise<IncomingMessage | null> {
+  const addr = msg.envelope?.from?.[0]?.address?.toLowerCase();
+  if (!addr) return null;
+  let bodyText: string | null = null;
+  let bodyHtml: string | null = null;
+  let snippet: string | null = null;
+  let inReplyTo: string | null = null;
+  let messageId: string | null = null;
+  let references: string[] = [];
+  let isAutoReply = false;
+  let isBounce = false;
+  const subject = msg.envelope?.subject ?? null;
+  if (msg.source) {
+    try {
+      const parsed = await simpleParser(msg.source);
+      bodyText = parsed.text ?? null;
+      bodyHtml = typeof parsed.html === "string" ? parsed.html : null;
+      if (bodyText) {
+        snippet = bodyText.replace(/\s+/g, " ").trim().slice(0, 200);
       }
-      out.push({
-        from: addr,
-        subject,
-        snippet,
-        body_text: bodyText,
-        body_html: bodyHtml,
-        date: msg.envelope?.date ?? null,
-        in_reply_to: inReplyTo,
-        references,
-        is_auto_reply: isAutoReply,
-        is_bounce: isBounce,
-      });
+      // mailparser exposes these as typed fields already
+      inReplyTo = normalizeMsgId(typeof parsed.inReplyTo === "string" ? parsed.inReplyTo : null);
+      messageId = normalizeMsgId(typeof parsed.messageId === "string" ? parsed.messageId : null);
+      if (Array.isArray(parsed.references)) {
+        references = parsed.references.map((r) => normalizeMsgId(r)).filter((x): x is string => !!x);
+      } else if (typeof parsed.references === "string") {
+        references = parsed.references
+          .split(/\s+/)
+          .map((r) => normalizeMsgId(r))
+          .filter((x): x is string => !!x);
+      }
+      isAutoReply = detectAutoReply(parsed.headers, subject, addr);
+      isBounce = detectBounce(parsed.headers, subject, addr);
+    } catch {
+      // ignore parse errors, keep envelope info only
+    }
+  }
+  return {
+    from: addr,
+    subject,
+    snippet,
+    body_text: bodyText,
+    body_html: bodyHtml,
+    date: msg.envelope?.date ?? null,
+    message_id: messageId,
+    in_reply_to: inReplyTo,
+    references,
+    is_auto_reply: isAutoReply,
+    is_bounce: isBounce,
+  };
+}
+
+// Pre-send guard for follow-ups (IMAP senders): mail from one recipient, plus
+// bounce notices mentioning them, received since `since`. IMAP SINCE is
+// date-granular, so results are re-filtered on the envelope date. Throws on
+// connection/login failure so the caller can fail closed.
+export async function fetchRecipientInbound(
+  creds: ImapCreds,
+  recipientEmail: string,
+  since: Date
+): Promise<IncomingMessage[]> {
+  const client = makeImapClient(creds);
+  const out: IncomingMessage[] = [];
+  await client.connect();
+  try {
+    // A reply the user already archived, filtered or that landed in spam is
+    // still a reply. Search the "all mail" folder when the server has one
+    // (Gmail: [Gmail]/All Mail, whatever it's called in the account's
+    // language), otherwise INBOX; plus the junk folder.
+    const boxes = await client.list();
+    const all = boxes.find((b) => b.specialUse === "\\All")?.path;
+    const junk = boxes.find((b) => b.specialUse === "\\Junk")?.path;
+    const paths = Array.from(new Set([all ?? "INBOX", ...(junk ? [junk] : [])]));
+    for (const path of paths) {
+      const lock = await client.getMailboxLock(path);
+      try {
+        const fromHits = (await client.search({ since, from: recipientEmail }, { uid: true })) || [];
+        const bounceHits =
+          (await client.search(
+            { since, or: [{ from: "mailer-daemon" }, { from: "postmaster" }], body: recipientEmail },
+            { uid: true }
+          )) || [];
+        const uids = Array.from(new Set([...(fromHits as number[]), ...(bounceHits as number[])]))
+          .sort((a, b) => a - b)
+          .slice(-10);
+        if (uids.length === 0) continue;
+        for await (const msg of client.fetch(uids, { envelope: true, source: true }, { uid: true })) {
+          const parsed = await toIncoming(msg);
+          if (!parsed) continue;
+          if (parsed.date && parsed.date.getTime() < since.getTime()) continue;
+          out.push(parsed);
+        }
+      } finally {
+        lock.release();
+      }
     }
   } finally {
     try { await client.logout(); } catch {}

@@ -42,6 +42,11 @@ export default function EditCampaignPage({ params }: { params: Promise<{ id: str
         attachment_filenames: camp.attachment_filenames ?? [],
         known_vars: camp.known_vars ?? [],
         start_at: camp.start_at ?? null,
+        timezone: camp.timezone ?? "Asia/Kolkata",
+        strict_merge: camp.strict_merge ?? true,
+        variants: camp.variants ?? null,
+        ab_winner_threshold: camp.ab_winner_threshold ?? null,
+        stop_on_domain_reply: camp.stop_on_domain_reply ?? true,
       });
       setSteps(fu.steps ?? []);
     });

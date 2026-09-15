@@ -38,6 +38,23 @@ export function verifyToken(kind: "u" | "o" | "c", token: string): string | null
   }
 }
 
+// Click-tracking redirect signature: binds the destination URL to the click
+// token so /api/t/c can't be used as an open redirect with a harvested token.
+export function signClickUrl(token: string, url: string): string {
+  return crypto
+    .createHmac("sha256", secret())
+    .update(`c-url:${token}:${url}`)
+    .digest("base64url")
+    .slice(0, 16);
+}
+
+export function verifyClickUrl(token: string, url: string, sig: string | null): boolean {
+  if (!sig) return false;
+  const a = Buffer.from(sig);
+  const b = Buffer.from(signClickUrl(token, url));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
 export function appUrl() {
   const url = process.env.APP_URL;
   if (!url) {

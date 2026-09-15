@@ -57,3 +57,12 @@ export function dayKey(now: Date, tz: string) {
   const d = parts.find((p) => p.type === "day")?.value;
   return `${y}-${m}-${d}`;
 }
+
+export function isValidTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}

@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const PROVIDERS = ["hubspot", "pipedrive", "slack"] as const;
-const INTENTS = ["interested", "question", "not_now", "unsubscribe", "other"] as const;
+const INTENTS = ["interested", "question", "not_now", "unsubscribe", "wrong_person", "other"] as const;
 
 // GET: the caller's integrations, without secrets.
 export async function GET() {

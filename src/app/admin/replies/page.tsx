@@ -65,6 +65,8 @@ export default function AdminRepliesPage() {
           <option value="question">Question</option>
           <option value="not_now">Not now</option>
           <option value="unsubscribe">Unsubscribe</option>
+          <option value="wrong_person">Wrong person</option>
+          <option value="left_company">Left company</option>
           <option value="ooo">OOO</option>
           <option value="bounce">Bounce</option>
           <option value="other">Other</option>

@@ -9,6 +9,7 @@ type Settings = {
   poll_replies: boolean;
   meeting_link: string | null;
   notify_interested: boolean;
+  meetings_token: string | null;
 };
 
 export default function SettingsPage() {
@@ -122,6 +123,7 @@ export default function SettingsPage() {
               </div>
               {linkMsg && <div className="text-[12px] text-ink-500 mt-2">{linkMsg}</div>}
             </div>
+            <MeetingWebhook token={settings.meetings_token} onChange={(next) => setSettings(next)} />
           </div>
         )}
 
@@ -130,6 +132,58 @@ export default function SettingsPage() {
         <SuppressionList />
       </div>
     </AppShell>
+  );
+}
+
+// Booking webhook: a new booking stops that person's follow-ups everywhere.
+function MeetingWebhook({ token, onChange }: { token: string | null; onChange: (s: Settings) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const url = token && typeof window !== "undefined" ? `${window.location.origin}/api/inbound/meetings/${token}` : null;
+
+  async function set(value: "regenerate" | null) {
+    setBusy(true);
+    setMsg(null);
+    const r = await fetch("/api/app/settings", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ meetings_token: value }),
+    });
+    const d = await r.json().catch(() => ({}));
+    setBusy(false);
+    if (!r.ok) { setMsg(d.error ?? "Couldn't save."); return; }
+    onChange(d as Settings);
+    setMsg(value ? "New URL created. Update it in your scheduler." : "Turned off.");
+  }
+
+  return (
+    <div className="sheet p-5">
+      <div className="text-[14px] font-semibold">Meeting bookings</div>
+      <div className="mt-1 text-[12px] text-ink-500">
+        When a prospect books a meeting, EmailsVia stops following up with them (and their colleagues, if the campaign
+        stops the whole company), cancels anything scheduled, and logs it. Add this URL as a webhook in your scheduler:
+        Cal.com: Settings → Developer → Webhooks → &quot;Booking created&quot;. Calendly: an <code>invitee.created</code>{" "}
+        webhook subscription. Anything else (Zapier, Make): POST JSON <code>{"{\"email\": \"…\"}"}</code>.
+      </div>
+      {url ? (
+        <div className="mt-3 space-y-2">
+          <div className="flex flex-col sm:flex-row gap-2">
+            <input readOnly className="field-boxed flex-1 text-[12px] font-mono" value={url} onFocus={(e) => e.target.select()} />
+            <button type="button" className="btn-ghost text-[13px]" onClick={() => { navigator.clipboard?.writeText(url); setMsg("Copied"); }}>Copy</button>
+          </div>
+          <div className="flex items-center gap-3 text-[12px]">
+            <button type="button" className="btn-quiet text-xs" disabled={busy} onClick={() => set("regenerate")}>Replace URL</button>
+            <button type="button" className="btn-quiet text-xs" disabled={busy} onClick={() => set(null)}>Turn off</button>
+            <span className="text-ink-500">Keep it private: anyone with it can mark meetings as booked.</span>
+          </div>
+        </div>
+      ) : (
+        <button type="button" className="btn-ghost text-[13px] mt-3" disabled={busy} onClick={() => set("regenerate")}>
+          Create webhook URL
+        </button>
+      )}
+      {msg && <div className="text-[12px] text-ink-500 mt-2">{msg}</div>}
+    </div>
   );
 }
 
@@ -300,6 +354,7 @@ const PUSHABLE_INTENTS: Array<{ id: string; label: string }> = [
   { id: "question", label: "Question" },
   { id: "not_now", label: "Not now" },
   { id: "unsubscribe", label: "Unsubscribe" },
+  { id: "wrong_person", label: "Wrong person" },
   { id: "other", label: "Other" },
 ];
 

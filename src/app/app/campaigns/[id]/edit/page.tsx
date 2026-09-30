@@ -12,13 +12,15 @@ export default function EditCampaignPage({ params }: { params: Promise<{ id: str
   const router = useRouter();
   const [initial, setInitial] = useState<CampaignInitial | null>(null);
   const [steps, setSteps] = useState<FollowUpStep[]>([]);
+  const [rules, setRules] = useState<{ rules: Array<Record<string, unknown>>; max_follow_ups: number; min_gap_days: number; send_time_optimization?: boolean } | undefined>();
 
   useEffect(() => {
     let cancel = false;
     Promise.all([
       fetch(`/api/campaigns/${id}`, { cache: "no-store" }).then((r) => r.json()),
       fetch(`/api/campaigns/${id}/follow-ups`, { cache: "no-store" }).then((r) => r.json()),
-    ]).then(([c, fu]) => {
+      fetch(`/api/campaigns/${id}/follow-up-rules`, { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    ]).then(([c, fu, fr]) => {
       if (cancel) return;
       if (!c.campaign) { router.push("/app"); return; }
       const camp = c.campaign;
@@ -49,6 +51,7 @@ export default function EditCampaignPage({ params }: { params: Promise<{ id: str
         stop_on_domain_reply: camp.stop_on_domain_reply ?? true,
       });
       setSteps(fu.steps ?? []);
+      if (fr?.rules) setRules(fr);
     });
     return () => { cancel = true; };
   }, [id, router]);
@@ -74,5 +77,5 @@ export default function EditCampaignPage({ params }: { params: Promise<{ id: str
       </AppShell>
     );
   }
-  return <AppShell><CampaignForm mode="edit" initial={initial} initialSteps={steps} /></AppShell>;
+  return <AppShell><CampaignForm mode="edit" initial={initial} initialSteps={steps} initialRules={rules} /></AppShell>;
 }

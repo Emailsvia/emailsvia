@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseUser } from "@/lib/supabase-server";
+import { supabaseAdmin } from "@/lib/supabase";
+import { recordEvents } from "@/lib/activity";
 import { getUser } from "@/lib/auth-server";
 import { mapWithLimit, validateEmail, type MailDomainStatus } from "@/lib/email-validator";
 import { verifierConfigured, verifyMailbox, type MailboxVerdict } from "@/lib/mailbox-verifier";
@@ -102,11 +104,25 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
   for (const b of invalid) byReason.set(b.reason, [...(byReason.get(b.reason) ?? []), b.id]);
   for (const [reason, ids] of byReason) {
     for (let i = 0; i < ids.length; i += 200) {
-      await db
+      const detail = `invalid: ${REASON_LABEL[reason] ?? reason}`;
+      const { data: skipped } = await db
         .from("recipients")
-        .update({ status: "skipped", error: `invalid: ${REASON_LABEL[reason] ?? reason}` })
+        .update({ status: "skipped", error: detail })
         .in("id", ids.slice(i, i + 200))
-        .eq("status", "pending");
+        .eq("status", "pending")
+        .select("id");
+      // Server-written log; these rows were just updated through RLS.
+      await recordEvents(
+        supabaseAdmin(),
+        (skipped ?? []).map((r) => ({
+          user_id: u.id,
+          campaign_id: id,
+          recipient_id: r.id,
+          type: "skipped" as const,
+          data: { reason: "invalid_address", detail, check: reason },
+          dedupe_key: "skipped:invalid_address",
+        }))
+      );
     }
   }
 

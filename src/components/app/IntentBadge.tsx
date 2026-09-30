@@ -10,7 +10,7 @@
 
 export type Intent =
   | "interested" | "question" | "not_now" | "unsubscribe"
-  | "ooo" | "bounce" | "other" | "uncategorized";
+  | "ooo" | "bounce" | "wrong_person" | "left_company" | "other" | "uncategorized";
 
 const TONE: Record<Intent, { label: string; dot: string; text: string; bg: string }> = {
   interested:    { label: "Interested",    dot: "rgb(16 185 129)",  text: "rgb(110 231 183)", bg: "rgb(16 185 129 / 0.10)" },
@@ -19,12 +19,14 @@ const TONE: Record<Intent, { label: string; dot: string; text: string; bg: strin
   unsubscribe:   { label: "Unsubscribe",   dot: "rgb(239 68 68)",   text: "rgb(252 165 165)", bg: "rgb(239 68 68 / 0.10)" },
   ooo:           { label: "Out of office", dot: "rgb(161 161 170)", text: "rgb(161 161 170)", bg: "rgb(255 255 255 / 0.04)" },
   bounce:        { label: "Bounce",        dot: "rgb(161 161 170)", text: "rgb(161 161 170)", bg: "rgb(255 255 255 / 0.04)" },
+  wrong_person:  { label: "Wrong person",  dot: "rgb(161 161 170)", text: "rgb(200 200 210)", bg: "rgb(255 255 255 / 0.05)" },
+  left_company:  { label: "Left company",  dot: "rgb(161 161 170)", text: "rgb(161 161 170)", bg: "rgb(255 255 255 / 0.04)" },
   other:         { label: "Other",         dot: "rgb(113 113 122)", text: "rgb(161 161 170)", bg: "rgb(255 255 255 / 0.04)" },
   uncategorized: { label: "Uncategorized", dot: "rgb(113 113 122)", text: "rgb(113 113 122)", bg: "rgb(255 255 255 / 0.03)" },
 };
 
 export const INTENT_ORDER: Intent[] = [
-  "interested", "question", "not_now", "unsubscribe", "ooo", "bounce", "other", "uncategorized",
+  "interested", "question", "not_now", "unsubscribe", "wrong_person", "left_company", "ooo", "bounce", "other", "uncategorized",
 ];
 
 export function intentTone(intent: Intent | string | null | undefined) {

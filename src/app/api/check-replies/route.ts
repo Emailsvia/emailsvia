@@ -12,7 +12,9 @@ import { mapWithLimit } from "@/lib/email-validator";
 import { markSenderRevoked } from "@/lib/sender-revoke";
 import { dispatch as fireWebhook } from "@/lib/webhooks";
 import { loadReplyPollUserIds } from "@/lib/user-settings";
-import { OOO_PAUSE_DAYS } from "@/lib/followup-guard";
+import { oooResumeAt, saveInboundReply } from "@/lib/followup-guard";
+import { recordEvent, recordEvents, stepOf } from "@/lib/activity";
+import { cancelPending } from "@/lib/nurture";
 import { emitBounced, emitSequenceStopped, emitCampaignPaused } from "@/lib/events";
 import { getAiProvider } from "@/lib/ai-provider";
 import { applyIntentActions } from "@/lib/reply-actions";
@@ -264,12 +266,14 @@ async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<Ne
     let matchedByFrom = 0;
     let skippedAuto = 0;
     let skippedBounce = 0;
-    const repliedRecipientIds = new Set<string>();
-    const bouncedRecipientIds = new Set<string>();
+    // recipient id → earliest human reply time seen this run (replied_at).
+    const repliedAt = new Map<string, Date>();
+    // recipient id → the delivery-failure notice that bounced them.
+    const bouncedRecipients = new Map<string, IncomingMessage>();
     // Campaigns whose mail a receiver rejected for failed SPF/DKIM/DMARC.
     const senderAuthCampaigns = new Set<string>();
-    // recipient id → latest out-of-office date seen this run.
-    const oooByRecipient = new Map<string, Date>();
+    // recipient id → latest out-of-office seen this run (its date + when to resume).
+    const oooByRecipient = new Map<string, { date: Date; resumeAt: Date }>();
 
     for (const msg of messages) {
       // Skip bounces (mailer-daemon / DSNs) — those aren't from the recipient
@@ -284,7 +288,9 @@ async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<Ne
           const target = matchBounce(msg, byMsgId, byEmail);
           if (target) {
             const dsn = classifyDsn(msg.subject, msg.body_text);
-            if (dsn === "hard" && target.status === "sent") bouncedRecipientIds.add(target.id);
+            if (dsn === "hard" && target.status === "sent" && !bouncedRecipients.has(target.id)) {
+              bouncedRecipients.set(target.id, msg);
+            }
             if (dsn === "sender_auth") senderAuthCampaigns.add(target.campaign_id);
             // "soft" (delays, quota, unrecognised): ignore.
           }
@@ -317,27 +323,50 @@ async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<Ne
       }
       if (!hit) continue;
 
-      const { data: savedRow, error } = await db
-        .from("replies")
-        .upsert(
-          {
-            recipient_id: hit.id,
-            campaign_id: hit.campaign_id,
-            user_id: s.user_id,
+      // Saved once: a message already stored (earlier poll, or the pre-send
+      // check) is returned untouched, so a manual/AI "ooo" relabel survives.
+      const savedRow = await saveInboundReply(
+        db,
+        { recipient_id: hit.id, campaign_id: hit.campaign_id, user_id: s.user_id },
+        msg,
+        msg.is_auto_reply,
+        new Date()
+      );
+      if (savedRow?.created) {
+        savedCount++;
+        // The email they answered, when their client quoted its Message-ID.
+        const { data: answered } = msg.in_reply_to
+          ? await db
+              .from("send_log")
+              .select("id, kind, step_number")
+              .eq("recipient_id", hit.id)
+              .eq("message_id", msg.in_reply_to)
+              .limit(1)
+              .maybeSingle()
+          : { data: null };
+        await recordEvent(db, {
+          user_id: s.user_id,
+          campaign_id: hit.campaign_id,
+          recipient_id: hit.id,
+          type: savedRow.is_auto_reply ? "auto_replied" : "replied",
+          occurred_at: msg.date ?? new Date(),
+          send_log_id: answered?.id ?? null,
+          step_number: stepOf(answered),
+          data: {
+            reply_id: savedRow.id,
+            via: "inbox_poll",
             from_email: msg.from,
-            subject: msg.subject,
-            snippet: msg.snippet,
-            body_text: msg.body_text,
-            body_html: msg.body_html,
-            received_at: msg.date?.toISOString() ?? null,
-            is_auto_reply: msg.is_auto_reply,
-            message_id: msg.message_id,
+            subject: msg.subject?.slice(0, 300),
+            snippet: msg.snippet?.slice(0, 300),
           },
-          { onConflict: "recipient_id,received_at" }
-        )
-        .select("id, intent")
-        .maybeSingle();
-      if (!error) savedCount++;
+          dedupe_key: `reply:${savedRow.id}`,
+        });
+        // They wrote again: anything scheduled from an earlier point in the
+        // conversation ("not now" re-engagement, a stalled-thread nudge) is moot.
+        if (!savedRow.is_auto_reply) {
+          await cancelPending(db, hit.id, { anchoredBefore: msg.date ?? new Date(), reason: "they_replied" });
+        }
+      }
 
       // Queue for triage iff the row has no intent yet. onConflict means
       // re-runs don't double-classify; we also skip rows already labelled
@@ -350,9 +379,9 @@ async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<Ne
           body: msg.body_text,
         });
       }
-      // Fire reply.received webhook (idempotent on reply.id — webhooks
-      // table has UNIQUE(webhook_id, event_id), so retry-safe).
-      if (savedRow) {
+      // Fire reply.received webhook once, when the reply is first stored
+      // (also idempotent on reply.id via UNIQUE(webhook_id, event_id)).
+      if (savedRow?.created) {
         await fireWebhook(db, {
           user_id: s.user_id,
           event_type: "reply.received",
@@ -371,52 +400,59 @@ async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<Ne
 
       // Out-of-office replies are saved (the owner sees them) but don't
       // end the sequence — they push the next follow-up out instead.
-      if (msg.is_auto_reply) {
+      // The stored label wins over this read's headers (AI or the user may
+      // have relabelled it).
+      if (savedRow ? savedRow.is_auto_reply : msg.is_auto_reply) {
         skippedAuto++;
         const d = msg.date ?? new Date();
         const prev = oooByRecipient.get(hit.id);
-        if (hit.status === "sent" && (!prev || d > prev)) oooByRecipient.set(hit.id, d);
+        if (hit.status === "sent" && (!prev || d > prev.date)) {
+          oooByRecipient.set(hit.id, { date: d, resumeAt: oooResumeAt(msg, new Date()) });
+        }
         continue;
       }
       if (hit.status === "sent" || hit.status === "pending") {
-        repliedRecipientIds.add(hit.id);
+        const d = msg.date ?? new Date();
+        const prev = repliedAt.get(hit.id);
+        if (!prev || d < prev) repliedAt.set(hit.id, d);
       }
     }
 
     let markedReplied = 0;
-    if (repliedRecipientIds.size > 0) {
+    const repliedRecipientIds = new Set(repliedAt.keys());
+    for (const [rid, at] of repliedAt) {
+      // replied_at = when they wrote, not when we noticed (poll time).
       const { data: updated, error: upErr } = await db
         .from("recipients")
         .update({
           status: "replied",
-          replied_at: new Date().toISOString(),
+          replied_at: at.toISOString(),
           next_follow_up_at: null,
           stop_reason: "replied",
         })
-        .in("id", Array.from(repliedRecipientIds))
+        .eq("id", rid)
+        .in("status", ["sent", "pending"])
         .select("id");
       if (upErr) {
         Sentry.captureException(new Error(upErr.message), {
           tags: { route: "check_replies", op: "mark_replied" },
         });
       }
-      markedReplied = updated?.length ?? 0;
+      const r = byId.get(rid);
+      if (r && updated?.length) {
+        markedReplied++;
+        await emitSequenceStopped(db, { ...r, user_id: s.user_id }, "replied", r.follow_up_count);
+      }
       // Company-level stop: one reply from acme.com ends the sequence for
       // everyone else at acme.com in that campaign.
-      for (const rid of repliedRecipientIds) {
-        const r = byId.get(rid);
-        if (r && updated?.some((u) => u.id === rid)) {
-          await emitSequenceStopped(db, { ...r, user_id: s.user_id }, "replied", r.follow_up_count);
-        }
-        if (r && domainStopByCampaign.get(r.campaign_id)) {
-          await stopDomainAfterReply(db, r.campaign_id, { id: r.id, email: r.email });
-        }
+      if (r && domainStopByCampaign.get(r.campaign_id)) {
+        await stopDomainAfterReply(db, r.campaign_id, { id: r.id, email: r.email });
       }
     }
 
     // Hard bounces reported by delivery-failure notices: stop the sequence
     // and add the address to the user's do-not-contact list.
-    for (const rid of bouncedRecipientIds) {
+    for (const [rid, notice] of bouncedRecipients) {
       if (repliedRecipientIds.has(rid)) continue;
       const r = byId.get(rid);
       if (!r) continue;
@@ -426,11 +462,12 @@ async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<Ne
         .eq("id", rid)
         .eq("status", "sent");
       await suppressEmail(db, s.user_id, r.email, "bounced", r.campaign_id);
-      await emitBounced(db, { ...r, user_id: s.user_id }, null);
+      const detail = [notice.subject, notice.snippet].filter(Boolean).join(" · ") || null;
+      await emitBounced(db, { ...r, user_id: s.user_id }, detail, { source: "dsn" });
       await emitSequenceStopped(db, { ...r, user_id: s.user_id }, "bounced", r.follow_up_count);
     }
     const bouncedCampaigns = new Set(
-      Array.from(bouncedRecipientIds).map((rid) => byId.get(rid)?.campaign_id).filter((x): x is string => !!x)
+      Array.from(bouncedRecipients.keys()).map((rid) => byId.get(rid)?.campaign_id).filter((x): x is string => !!x)
     );
     for (const cid of bouncedCampaigns) await maybePauseForBounces(db, cid);
     for (const cid of senderAuthCampaigns) {
@@ -444,19 +481,31 @@ async function runCheckReplies(db: ReturnType<typeof supabaseAdmin>): Promise<Ne
     }
 
     // Pause sequences for out-of-office recipients: next follow-up no earlier
-    // than OOO_PAUSE_DAYS after the auto-reply. Keyed on the message date, so
-    // re-reading the same OOO on later polls is a no-op.
-    for (const [recipientId, d] of oooByRecipient) {
+    // than the day after their stated return (else OOO_PAUSE_DAYS after the
+    // auto-reply). Derived from the message, so re-reading the same OOO on
+    // later polls is a no-op.
+    for (const [recipientId, { resumeAt }] of oooByRecipient) {
       if (repliedRecipientIds.has(recipientId)) continue;
-      const resumeAt = new Date(d.getTime() + OOO_PAUSE_DAYS * 86_400_000);
       if (resumeAt <= new Date()) continue;
-      await db
+      const { data: paused } = await db
         .from("recipients")
         .update({ next_follow_up_at: resumeAt.toISOString() })
         .eq("id", recipientId)
         .eq("status", "sent")
         .not("next_follow_up_at", "is", null)
-        .lt("next_follow_up_at", resumeAt.toISOString());
+        .lt("next_follow_up_at", resumeAt.toISOString())
+        .select("id, campaign_id, user_id, next_step_number");
+      await recordEvents(
+        db,
+        (paused ?? []).map((p) => ({
+          user_id: p.user_id,
+          campaign_id: p.campaign_id,
+          recipient_id: p.id,
+          type: "sequence_paused" as const,
+          data: { reason: "out_of_office", until: resumeAt.toISOString(), step: p.next_step_number },
+          dedupe_key: `paused:ooo:${resumeAt.toISOString().slice(0, 10)}`,
+        }))
+      );
     }
 
     results.push({

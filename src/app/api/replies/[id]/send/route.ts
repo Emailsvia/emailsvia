@@ -3,6 +3,8 @@ import { z } from "zod";
 import * as Sentry from "@sentry/nextjs";
 import { supabaseUser } from "@/lib/supabase-server";
 import { supabaseAdmin } from "@/lib/supabase";
+import { recordEvent } from "@/lib/activity";
+import { scheduleStalledNudge } from "@/lib/nurture";
 import { getUser } from "@/lib/auth-server";
 import { sendMail } from "@/lib/mail";
 import { toHtml, toPlain } from "@/lib/template";
@@ -107,6 +109,33 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       .select("id, subject, body, sent_at")
       .single();
     await db.from("replies").update({ handled_at: now, read_at: now }).eq("id", reply.id);
+    // The activity log is server-written only; the reply (and its recipient)
+    // was loaded through RLS above, so it belongs to this user.
+    if (recipient && reply.campaign_id) {
+      await recordEvent(admin, {
+        user_id: u.id,
+        campaign_id: reply.campaign_id,
+        recipient_id: recipient.id,
+        type: "you_replied",
+        occurred_at: now,
+        data: {
+          reply_id: reply.id,
+          reply_message_id: saved?.id,
+          subject: subject.slice(0, 300),
+          snippet: parsed.data.body.slice(0, 300),
+          sender: sender.email,
+        },
+        dedupe_key: saved?.id ? `you_replied:${saved.id}` : null,
+      });
+      // If they don't answer, a "went quiet" rule can nudge (after approval).
+      await scheduleStalledNudge(admin, {
+        user_id: u.id,
+        campaign_id: reply.campaign_id,
+        recipient_id: recipient.id,
+        reply_id: reply.id,
+        answered_at: new Date(now),
+      });
+    }
     return NextResponse.json({ ok: true, message: saved });
   } catch (e) {
     const errorClass = classifyError(e);

@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import * as Sentry from "@sentry/nextjs";
 import { supabaseAdmin } from "@/lib/supabase";
@@ -10,7 +11,7 @@ import {
 } from "@/lib/mail";
 import { render, spin, toHtml, toPlain, missingMergeFields } from "@/lib/template";
 import { inWindow, dayKey } from "@/lib/time";
-import { signToken, signClickUrl, appUrl, cronBearerOk } from "@/lib/tokens";
+import { signMessageToken, signClickUrl, appUrl, cronBearerOk } from "@/lib/tokens";
 import { downloadAttachment } from "@/lib/attachment";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { warmupCapForSender } from "@/lib/warmup";
@@ -25,7 +26,11 @@ import {
   stepAfter,
   type FollowUpStep as ConditionalStep,
 } from "@/lib/follow-up-condition";
-import { checkBeforeFollowUp, saveGuardReply, type GuardVerdict } from "@/lib/followup-guard";
+import { checkBeforeFollowUp, saveInboundReply, type GuardVerdict } from "@/lib/followup-guard";
+import { recordEvent } from "@/lib/activity";
+import { decide, choiceLabel, type Decision, type EngineConfig } from "@/lib/followup-engine";
+import { loadEngineConfig, engineRecipient, replyContextFor, reevaluatePending } from "@/lib/followup-rules";
+import { scheduleNextNurture, cancelPending, type NurtureKind } from "@/lib/nurture";
 import { loadSenderCreds, persistRefreshedToken } from "@/lib/sender-creds";
 import { addDelay, withJitter } from "@/lib/sequence-schedule";
 import {
@@ -35,7 +40,7 @@ import {
   maybePauseForBounces,
 } from "@/lib/sequence-stop";
 import { dispatch as fireWebhook } from "@/lib/webhooks";
-import { emitEmailSent, emitBounced, emitSequenceStopped, emitCampaignPaused } from "@/lib/events";
+import { emitEmailSent, emitBounced, emitSequenceStopped, emitCampaignPaused, emitNeedsApproval } from "@/lib/events";
 import { mapWithLimit } from "@/lib/email-validator";
 
 export const runtime = "nodejs";
@@ -531,7 +536,9 @@ async function processCampaign(
   const inFlightCutoff = new Date(now.getTime() - IN_FLIGHT_HOLD_MS).toISOString();
   // Assigned inside pickFollowUp/pickFirstSend; the cast stops TS narrowing
   // it to "initial" across those closures.
-  let kind = "initial" as "initial" | "follow_up" | "retry";
+  // "nurture" = a follow-up to someone who already replied (scheduled_followups:
+  // "not now" re-engagement, approved stalled-thread nudge).
+  let kind = "initial" as "initial" | "follow_up" | "retry" | "nurture";
   let recipient: any = null;
   let step: any = null;
 
@@ -549,11 +556,117 @@ async function processCampaign(
       .order("step_number", { ascending: true });
     steps = (stepsRaw ?? []) as ConditionalStep[];
   }
+  // Activity-based rules (Growth/Scale: conditional_sequences). Null when the
+  // campaign has none, and then everything below runs the plain step
+  // sequence exactly as before.
+  const engine: EngineConfig | null =
+    followUpsActive && campaignPlan && hasFeature(campaignPlan, "conditional_sequences")
+      ? await loadEngineConfig(db, campaign as Parameters<typeof loadEngineConfig>[1], steps)
+      : null;
+  // The scheduled_followups row being sent (kind "nurture" only).
+  type NurtureItem = {
+    id: string; kind: NurtureKind; rule_id: string | null; rule_email_id: string | null;
+    anchor_reply_id: string | null; anchor_at: string; requires_approval: boolean; attempts: number;
+    user_id: string; campaign_id: string; recipient_id: string;
+    // Threading into the conversation they replied in.
+    inReplyTo: string | null; references: string[]; subjectBase: string | null;
+  };
+  let nurture = null as NurtureItem | null;
+  // The engine's pick for this follow-up (rules mode only). Assigned inside
+  // pickByRules; the cast stops TS narrowing it to null across the closure.
+  let decision = null as Extract<Decision, { kind: "send" }> | null;
+  if (engine) {
+    // New opens/clicks since the last check can make a rule due sooner.
+    await reevaluatePending(db, campaign as { id: string; user_id: string }, engine, now);
+  }
 
   // Returns a response when the tick is consumed without a send (step
   // skipped / sequence finished); otherwise sets recipient/kind/step.
+  // Follow-ups to people who already replied, when due. Ones that need the
+  // user's go-ahead are parked as needs_approval instead of sent.
+  async function pickNurture(): Promise<boolean> {
+    if (!followUpsActive || !campaignPlan || !hasFeature(campaignPlan, "conditional_sequences")) return false;
+    // A send killed mid-flight leaves its row in 'sending'; like a claimed
+    // follow-up, it's retried after the in-flight hold.
+    await db
+      .from("scheduled_followups")
+      .update({ status: "scheduled" })
+      .eq("campaign_id", campaign.id)
+      .eq("status", "sending")
+      .lt("updated_at", inFlightCutoff);
+    const { data: parked } = await db
+      .from("scheduled_followups")
+      .update({ status: "needs_approval" })
+      .eq("campaign_id", campaign.id)
+      .eq("status", "scheduled")
+      .eq("requires_approval", true)
+      .is("approved_at", null)
+      .lte("due_at", nowIso)
+      .select("id, user_id, campaign_id, recipient_id, kind");
+    for (const p of parked ?? []) {
+      await recordEvent(db, {
+        user_id: p.user_id, campaign_id: p.campaign_id, recipient_id: p.recipient_id,
+        type: "followup_decided",
+        data: { outcome: "needs_approval", kind: p.kind },
+        dedupe_key: `approval:${p.id}`,
+      });
+      await emitNeedsApproval(db, { id: p.recipient_id, campaign_id: p.campaign_id, user_id: p.user_id }, { scheduled_id: p.id, kind: p.kind });
+    }
+    const { data: item } = await db
+      .from("scheduled_followups")
+      .select("*")
+      .eq("campaign_id", campaign.id)
+      .eq("status", "scheduled")
+      .lte("due_at", nowIso)
+      .or("requires_approval.eq.false,approved_at.not.is.null")
+      .order("due_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (!item) return false;
+    const [{ data: rec }, { data: ruleEmail }, { data: anchorReply }, { data: ourLast }] = await Promise.all([
+      db.from("recipients").select("*").eq("id", item.recipient_id).maybeSingle(),
+      item.rule_email_id
+        ? db.from("follow_up_rule_emails").select("id, subject, template, thread_mode, rule:follow_up_rules(name)").eq("id", item.rule_email_id).maybeSingle()
+        : Promise.resolve({ data: null }),
+      item.anchor_reply_id
+        ? db.from("replies").select("message_id, subject").eq("id", item.anchor_reply_id).maybeSingle()
+        : Promise.resolve({ data: null }),
+      db.from("reply_messages").select("message_id").eq("recipient_id", item.recipient_id).order("sent_at", { ascending: false }).limit(1).maybeSingle(),
+    ]);
+    const blocked = rec?.sender_id && rotationIds.includes(rec.sender_id) && !eligiblePool.has(rec.sender_id);
+    if (!rec || !ruleEmail || !["replied", "sent"].includes(rec.status)) {
+      await db.from("scheduled_followups").update({ status: "cancelled", cancel_reason: !ruleEmail ? "rule_removed" : `recipient_${rec?.status ?? "missing"}` }).eq("id", item.id);
+      return false;
+    }
+    if (blocked) return false; // its mailbox is throttled this tick; try later
+    const chain = [rec.message_id, anchorReply?.message_id, item.kind === "thread_stalled" ? ourLast?.message_id : null]
+      .filter((x): x is string => !!x)
+      .map((m) => (m.startsWith("<") ? m : `<${m}>`));
+    nurture = {
+      id: item.id, kind: item.kind, rule_id: item.rule_id, rule_email_id: item.rule_email_id,
+      anchor_reply_id: item.anchor_reply_id, anchor_at: item.anchor_at, requires_approval: item.requires_approval,
+      attempts: item.attempts ?? 0, user_id: item.user_id, campaign_id: item.campaign_id, recipient_id: item.recipient_id,
+      inReplyTo: chain[chain.length - 1] ?? null,
+      references: Array.from(new Set(chain)),
+      subjectBase: anchorReply?.subject ?? null,
+    };
+    recipient = rec;
+    kind = "nurture";
+    step = {
+      step_number: (rec.follow_up_count ?? 0) + 1,
+      subject: ruleEmail.subject,
+      template: ruleEmail.template,
+      thread_mode: ruleEmail.thread_mode,
+      rule_id: item.rule_id,
+      rule_email_id: item.rule_email_id,
+      rule_name: (Array.isArray(ruleEmail.rule) ? ruleEmail.rule[0] : ruleEmail.rule)?.name ?? null,
+    };
+    return true;
+  }
+
   async function pickFollowUp(): Promise<NextResponse | null> {
     if (!followUpsActive || !campaign) return null;
+    if (await pickNurture()) return null;
     // Rotation senders that are attached but not eligible this tick. Their
     // recipients' follow-ups wait instead of switching mailbox.
     const blockedSenderIds = rotationIds.filter((id) => !eligiblePool.has(id));
@@ -571,6 +684,7 @@ async function processCampaign(
       .order("next_follow_up_at", { ascending: true })
       .limit(1)
       .maybeSingle();
+    if (due && engine) return pickByRules(due, engine);
     if (due) {
       // Conditions are evaluated now, when the step is due — not when the
       // previous email went out.
@@ -580,11 +694,17 @@ async function processCampaign(
         ? await fetchReplyContext(db, due.id)
         : { hasReplied: false, lastIntent: null };
       const resolved = resolveDueStep(steps, dueStep, ctx);
+      const who = { user_id: campaign.user_id, campaign_id: campaign.id, recipient_id: due.id };
       if (resolved.kind === "end") {
         await db
           .from("recipients")
           .update({ next_follow_up_at: null, next_step_number: null, stop_reason: "completed" })
           .eq("id", due.id);
+        await recordEvent(db, {
+          ...who,
+          type: "followup_decided",
+          data: { outcome: "end", due_step: dueStep, why: "no remaining step's condition matched" },
+        });
         await emitSequenceStopped(db, { ...due, campaign_id: campaign.id, user_id: campaign.user_id }, "completed", due.follow_up_count ?? 0);
         return NextResponse.json({ status: "follow_up_sequence_complete", recipient: due.email });
       }
@@ -596,6 +716,17 @@ async function processCampaign(
           .from("recipients")
           .update({ next_follow_up_at: at, next_step_number: resolved.step.step_number })
           .eq("id", due.id);
+        await recordEvent(db, {
+          ...who,
+          type: "followup_decided",
+          data: {
+            outcome: "skip",
+            skipped_step: dueStep,
+            next_step: resolved.step.step_number,
+            next_at: at,
+            why: "step condition not met",
+          },
+        });
         return NextResponse.json({
           status: "follow_up_step_skipped",
           recipient: due.email,
@@ -608,6 +739,61 @@ async function processCampaign(
       kind = "follow_up";
       step = resolved.step;
     }
+    return null;
+  }
+
+  // Rules mode: ask the engine what this recipient's activity calls for.
+  async function pickByRules(due: Record<string, any>, cfg: EngineConfig): Promise<NextResponse | null> {
+    const who = { user_id: campaign.user_id, campaign_id: campaign.id, recipient_id: due.id as string };
+    const er = await engineRecipient(db, cfg, due, now);
+    const d = decide(cfg, er, await replyContextFor(db, cfg, due.id), now);
+    if (d.kind === "end") {
+      await db
+        .from("recipients")
+        .update({ next_follow_up_at: null, stop_reason: "completed", reeval_pending: false })
+        .eq("id", due.id);
+      await recordEvent(db, { ...who, type: "followup_decided", data: { outcome: "end", why: d.why } });
+      await emitSequenceStopped(db, { ...due, campaign_id: campaign.id, user_id: campaign.user_id } as { id: string; email: string; campaign_id: string; user_id: string }, "completed", due.follow_up_count ?? 0);
+      return NextResponse.json({ status: "follow_up_sequence_complete", recipient: due.email, why: d.why });
+    }
+    const label = choiceLabel(d.choice);
+    if (d.kind === "wait") {
+      const at = withJitter(d.due).toISOString();
+      const patch: Record<string, unknown> = { next_follow_up_at: at, current_rule_id: label.rule_id };
+      if (d.choice.source === "fallback") patch.next_step_number = d.choice.step.step_number;
+      await db.from("recipients").update(patch).eq("id", due.id);
+      // Log only when the plan for this person changed (a different rule).
+      if ((due.current_rule_id ?? null) !== label.rule_id || (d.choice.source === "fallback" && d.choice.skippedSteps.length > 0)) {
+        await recordEvent(db, {
+          ...who,
+          type: "followup_decided",
+          data: {
+            outcome: "wait",
+            rule_id: label.rule_id,
+            rule_name: label.rule_name,
+            matched: label.matched,
+            skipped_steps: d.choice.source === "fallback" ? d.choice.skippedSteps : undefined,
+            next_at: at,
+          },
+        });
+      }
+      return NextResponse.json({ status: "follow_up_waiting", recipient: due.email, rule: label.rule_name, next_at: at });
+    }
+    decision = d;
+    recipient = due;
+    kind = "follow_up";
+    step =
+      d.choice.source === "rule"
+        ? {
+            // Rule emails are numbered by how many follow-ups this person has had.
+            step_number: (due.follow_up_count ?? 0) + 1,
+            subject: d.choice.email.subject,
+            template: d.choice.email.template,
+            thread_mode: d.choice.email.thread_mode,
+            rule_id: d.choice.rule.id,
+            rule_email_id: d.choice.email.id,
+          }
+        : d.choice.step;
     return null;
   }
 
@@ -643,7 +829,7 @@ async function processCampaign(
   // Interleave: if the last send was a follow-up, give a first send the
   // next turn, so a big follow-up backlog can't stall new outreach (and new
   // outreach can't starve due follow-ups).
-  if (lastSendKind.get(campaign.id) === "follow_up") {
+  if (["follow_up", "nurture"].includes(lastSendKind.get(campaign.id) ?? "")) {
     await pickFirstSend();
     if (!recipient) {
       const r = await pickFollowUp();
@@ -667,7 +853,16 @@ async function processCampaign(
           .eq("status", "sent")
           .not("next_follow_up_at", "is", null)
       : { count: 0 };
-    const upcoming = upcomingRaw ?? 0;
+    // Follow-ups scheduled for people who replied ("not now", stalled
+    // threads awaiting approval) keep the campaign open too.
+    const { count: nurturePending } = followUpsActive
+      ? await db
+          .from("scheduled_followups")
+          .select("*", { count: "exact", head: true })
+          .eq("campaign_id", campaign.id)
+          .in("status", ["scheduled", "needs_approval", "sending"])
+      : { count: 0 };
+    const upcoming = (upcomingRaw ?? 0) + (nurturePending ?? 0);
     const { count: pendingRetries } = await db
       .from("recipients")
       .select("*", { count: "exact", head: true })
@@ -715,6 +910,16 @@ async function processCampaign(
 
   // Identity used by webhook events below.
   const rcpt = { id: recipient.id as string, email: recipient.email as string, campaign_id: campaign.id as string, user_id: campaign.user_id as string };
+  // Activity-log identity + the email this attempt is about.
+  const who = { user_id: rcpt.user_id, campaign_id: rcpt.campaign_id, recipient_id: rcpt.id };
+  // Follow-ups and nurture emails send a step's / rule email's content.
+  const usesStep = kind === "follow_up" || kind === "nurture";
+  const stepNo: number = usesStep ? step.step_number : 0;
+  // Nurture bookkeeping lives on its scheduled_followups row, never on the
+  // recipient's sequence fields (the person already replied).
+  const setNurture = async (patch: Record<string, unknown>) => {
+    if (nurture) await db.from("scheduled_followups").update(patch).eq("id", nurture.id);
+  };
 
   // skip if this user has unsubscribed this address (per-user list)
   const { data: unsub } = await db
@@ -724,11 +929,25 @@ async function processCampaign(
     .eq("email", recipient.email)
     .maybeSingle();
   if (unsub) {
-    await db.from("recipients").update({ status: "unsubscribed", next_follow_up_at: null }).eq("id", recipient.id);
+    await db
+      .from("recipients")
+      .update({ status: "unsubscribed", next_follow_up_at: null, stop_reason: recipient.stop_reason ?? "unsubscribed" })
+      .eq("id", recipient.id);
+    await setNurture({ status: "cancelled", cancel_reason: "unsubscribed" });
+    if (kind === "follow_up") {
+      await emitSequenceStopped(db, rcpt, "unsubscribed", recipient.follow_up_count ?? 0);
+    } else {
+      await recordEvent(db, { ...who, type: "skipped", data: { reason: "unsubscribed" }, dedupe_key: "skipped:unsubscribed" });
+    }
     return NextResponse.json({ status: "skipped_unsubscribed", to: recipient.email });
   }
   // Do-not-contact list (bounced addresses, blocked domains), all campaigns.
   const suppressed = await findSuppression(db, campaign.user_id, recipient.email);
+  if (suppressed && nurture) {
+    await setNurture({ status: "cancelled", cancel_reason: "suppressed" });
+    await recordEvent(db, { ...who, type: "skipped", step_number: stepNo, data: { reason: "suppressed", by: suppressed.kind, kind: "nurture" } });
+    return NextResponse.json({ status: "skipped_suppressed", to: recipient.email, by: suppressed.kind });
+  }
   if (suppressed) {
     await db
       .from("recipients")
@@ -738,17 +957,39 @@ async function processCampaign(
           : { status: "skipped", stop_reason: "suppressed", next_retry_at: null, error: `suppressed_${suppressed.kind}` }
       )
       .eq("id", recipient.id);
+    if (kind === "follow_up") {
+      await emitSequenceStopped(db, rcpt, "suppressed", recipient.follow_up_count ?? 0, {
+        by: suppressed.kind,
+        list_reason: suppressed.reason,
+      });
+    } else {
+      await recordEvent(db, {
+        ...who,
+        type: "skipped",
+        data: { reason: "suppressed", by: suppressed.kind, list_reason: suppressed.reason },
+        dedupe_key: "skipped:suppressed",
+      });
+    }
     return NextResponse.json({ status: "skipped_suppressed", to: recipient.email, by: suppressed.kind });
   }
 
   // ---- pre-send reply / bounce / out-of-office guard (follow-ups only) ----
   // Ask the mailbox directly instead of trusting the 5-minute reply poll.
   // Fails closed: if we can't check, we don't send and try again later.
-  if (kind === "follow_up" && sender) {
-    const since = new Date(
-      new Date(recipient.sent_at ?? recipient.last_sent_at ?? nowIso).getTime() - 60_000
-    );
+  if (usesStep && sender) {
+    // A nurture email only cares about mail newer than the point it was
+    // scheduled from (their "not now", or your last answer).
+    const since = nurture
+      ? new Date(new Date(nurture.anchor_at).getTime() + 1000)
+      : new Date(new Date(recipient.sent_at ?? recipient.last_sent_at ?? nowIso).getTime() - 60_000);
     let verdict: Awaited<ReturnType<typeof checkBeforeFollowUp>>["verdict"] | undefined;
+    const { data: autoRows } = await db
+      .from("replies")
+      .select("message_id")
+      .eq("recipient_id", recipient.id)
+      .eq("is_auto_reply", true)
+      .not("message_id", "is", null);
+    const knownAutoReplyIds = new Set((autoRows ?? []).map((r) => r.message_id as string));
     // Which inbox the guard is reading, so a failure is pinned on that one.
     let checking: { id: string | null; email: string } = { id: chosenSenderId, email: sender.email };
     try {
@@ -767,6 +1008,7 @@ async function processCampaign(
           recipientEmail: recipient.email,
           since,
           now,
+          knownAutoReplyIds,
         });
         if (inbox.id) await persistRefreshedToken(db, inbox.id, out.tokensRefreshed);
         if (!verdict || verdict.kind === "clear" || (verdict.kind === "ooo" && out.verdict.kind !== "clear")) {
@@ -788,6 +1030,21 @@ async function processCampaign(
         tags: { route: "tick", op: "followup_guard", error_class: errorClass },
         contexts: { recipient: { id: recipient.id }, inbox: { id: checking.id, email: checking.email } },
       });
+      if (nurture) {
+        const attempts = nurture.attempts + 1;
+        const giveUp = attempts >= GUARD_MAX_ATTEMPTS;
+        const retryAt = new Date(now.getTime() + 30 * 60 * 1000 * attempts).toISOString();
+        await setNurture(
+          giveUp
+            ? { status: "failed", attempts, error: `Couldn't check ${checking.email} for a reply: ${msg}`.slice(0, 500) }
+            : { due_at: retryAt, attempts, error: msg.slice(0, 500) }
+        );
+        await recordEvent(db, {
+          ...who, type: "send_failed", step_number: stepNo,
+          data: { stage: "reply_check", kind: "nurture", error_class: errorClass, error: msg.slice(0, 300), inbox: checking.email, will_retry: !giveUp, retry_at: giveUp ? null : retryAt },
+        });
+        return NextResponse.json({ status: giveUp ? "nurture_failed_guard" : "nurture_guard_failed", to: recipient.email, error_class: errorClass });
+      }
       // Retry with backoff, but don't loop forever on a permanent problem
       // (IMAP disabled, wrong IMAP host): after GUARD_MAX_ATTEMPTS the
       // sequence stops with a visible reason instead of hanging silently.
@@ -803,6 +1060,19 @@ async function processCampaign(
             : { next_follow_up_at: retryAt, follow_up_attempts: attempts, error }
         )
         .eq("id", recipient.id);
+      await recordEvent(db, {
+        ...who,
+        type: "send_failed",
+        step_number: stepNo,
+        data: {
+          stage: "reply_check",
+          error_class: errorClass,
+          error: msg.slice(0, 300),
+          inbox: checking.email,
+          will_retry: !giveUp,
+          retry_at: giveUp ? null : retryAt,
+        },
+      });
       if (giveUp) await emitSequenceStopped(db, rcpt, "guard_failed", recipient.follow_up_count ?? 0);
       return NextResponse.json({
         status: giveUp ? "follow_up_stopped_guard_failed" : "follow_up_guard_failed",
@@ -814,8 +1084,59 @@ async function processCampaign(
 
     const guard: GuardVerdict = verdict ?? { kind: "clear" };
     const owner = { recipient_id: recipient.id, campaign_id: campaign.id, user_id: campaign.user_id };
-    if (guard.kind === "replied") {
-      const replyId = await saveGuardReply(db, owner, guard.message, false, now);
+    // They wrote again (or are away) since this nurture email was scheduled.
+    if (nurture && (guard.kind === "replied" || guard.kind === "ooo")) {
+      const saved = await saveInboundReply(db, owner, guard.message, guard.kind === "ooo", now);
+      if (saved?.created) {
+        await recordEvent(db, {
+          ...who,
+          type: saved.is_auto_reply ? "auto_replied" : "replied",
+          occurred_at: guard.message.date ?? now,
+          data: { reply_id: saved.id, via: "pre_send_check", from_email: guard.message.from, subject: guard.message.subject?.slice(0, 300), snippet: guard.message.snippet?.slice(0, 300) },
+          dedupe_key: `reply:${saved.id}`,
+        });
+        if (!saved.is_auto_reply) {
+          await fireWebhook(db, {
+            user_id: campaign.user_id,
+            event_type: "reply.received",
+            event_id: saved.id,
+            payload: { reply_id: saved.id, campaign_id: campaign.id, recipient_id: recipient.id, from_email: guard.message.from, subject: guard.message.subject, snippet: guard.message.snippet, received_at: guard.message.date?.toISOString() ?? null },
+          }, { queueOnly: true });
+        }
+      }
+      if (guard.kind === "ooo") {
+        await setNurture({ due_at: guard.resumeAt.toISOString() });
+        return NextResponse.json({ status: "nurture_paused_ooo", to: recipient.email, resume_at: guard.resumeAt.toISOString() });
+      }
+      // A human message since this was scheduled (or one we couldn't store):
+      // don't send. A stored message relabelled as an auto-reply isn't one.
+      if (!saved || !saved.is_auto_reply) {
+        await cancelPending(db, recipient.id, { anchoredBefore: guard.message.date ?? now, reason: "they_replied" });
+        await setNurture({ status: "cancelled", cancel_reason: "they_replied" });
+        return NextResponse.json({ status: "nurture_cancelled_replied", to: recipient.email });
+      }
+    }
+    if (nurture && guard.kind === "bounced") {
+      await setNurture({ status: "cancelled", cancel_reason: "bounced" });
+    }
+    if (guard.kind === "replied" && !nurture) {
+      const saved = await saveInboundReply(db, owner, guard.message, false, now);
+      const replyId = saved?.id ?? null;
+      if (saved) {
+        await recordEvent(db, {
+          ...who,
+          type: saved.is_auto_reply ? "auto_replied" : "replied",
+          occurred_at: guard.message.date ?? now,
+          data: {
+            reply_id: saved.id,
+            via: "pre_send_check",
+            from_email: guard.message.from,
+            subject: guard.message.subject?.slice(0, 300),
+            snippet: guard.message.snippet?.slice(0, 300),
+          },
+          dedupe_key: `reply:${saved.id}`,
+        });
+      }
       await db
         .from("recipients")
         .update({
@@ -826,7 +1147,7 @@ async function processCampaign(
         })
         .eq("id", recipient.id)
         .eq("status", "sent");
-      if (replyId) {
+      if (replyId && saved?.created) {
         await fireWebhook(db, {
           user_id: campaign.user_id,
           event_type: "reply.received",
@@ -864,7 +1185,7 @@ async function processCampaign(
         .eq("id", recipient.id)
         .eq("status", "sent");
       await suppressEmail(db, campaign.user_id, recipient.email, "bounced", campaign.id);
-      await emitBounced(db, rcpt, guard.message.subject);
+      await emitBounced(db, rcpt, [guard.message.subject, guard.message.snippet].filter(Boolean).join(" · "), { source: "dsn" });
       await emitSequenceStopped(db, rcpt, "bounced", recipient.follow_up_count ?? 0);
       const shielded = await maybePauseForBounces(db, campaign.id);
       return NextResponse.json({
@@ -882,6 +1203,16 @@ async function processCampaign(
         .eq("id", campaign.id)
         .eq("status", "running");
       await emitCampaignPaused(db, campaign as { id: string; user_id: string; name: string }, "sender_auth");
+      await recordEvent(db, {
+        ...who,
+        type: "send_failed",
+        data: {
+          stage: "delivery",
+          error_class: "sender_auth",
+          detail: guard.message.subject?.slice(0, 300),
+          campaign_paused: true,
+        },
+      });
       return NextResponse.json({
         status: "campaign_paused_sender_auth",
         campaign: campaign.name,
@@ -890,11 +1221,31 @@ async function processCampaign(
       });
     }
     if (guard.kind === "ooo") {
-      await saveGuardReply(db, owner, guard.message, true, now);
+      const saved = await saveInboundReply(db, owner, guard.message, true, now);
       await db
         .from("recipients")
         .update({ next_follow_up_at: guard.resumeAt.toISOString() })
         .eq("id", recipient.id);
+      if (saved) {
+        await recordEvent(db, {
+          ...who,
+          type: "auto_replied",
+          occurred_at: guard.message.date ?? now,
+          data: {
+            reply_id: saved.id,
+            via: "pre_send_check",
+            subject: guard.message.subject?.slice(0, 300),
+            snippet: guard.message.snippet?.slice(0, 300),
+          },
+          dedupe_key: `reply:${saved.id}`,
+        });
+      }
+      await recordEvent(db, {
+        ...who,
+        type: "sequence_paused",
+        data: { reason: "out_of_office", until: guard.resumeAt.toISOString(), step: stepNo },
+        dedupe_key: `paused:ooo:${guard.resumeAt.toISOString().slice(0, 10)}`,
+      });
       return NextResponse.json({
         status: "follow_up_paused_ooo",
         to: recipient.email,
@@ -924,7 +1275,16 @@ async function processCampaign(
   // pickers, and a claimed follow-up is pushed IN_FLIGHT_HOLD_MS out. Every
   // outcome path below overwrites these, so only a killed process leaves
   // them, and then the row waits instead of being sent twice.
-  {
+  if (nurture) {
+    const { data: claim } = await db
+      .from("scheduled_followups")
+      .update({ status: "sending" })
+      .eq("id", nurture.id)
+      .eq("status", "scheduled")
+      .select("id")
+      .maybeSingle();
+    if (!claim) return NextResponse.json({ status: "claim_lost", to: recipient.email, kind });
+  } else {
     const prior = recipient.last_sent_at;
     let q = db
       .from("recipients")
@@ -950,6 +1310,11 @@ async function processCampaign(
     }
   }
 
+  // This attempt's send_log id, picked up front so the tracking pixel, click
+  // links and unsubscribe link inside the email can point at this exact
+  // email. Every outcome below writes at most one send_log row, with this id.
+  const sendLogId = randomUUID();
+
   // ---- render ----
   const vars = { ...(recipient.vars ?? {}), Name: recipient.name, Company: recipient.company };
 
@@ -963,7 +1328,32 @@ async function processCampaign(
   // A/B testing is plan-gated here too: variants can be written directly
   // through RLS, and a downgraded plan stops splitting (main copy is used).
   const abAllowed = !!planByUser.get(campaign.user_id) && hasFeature(planByUser.get(campaign.user_id)!, "a_b_testing");
-  if (kind !== "follow_up" && abAllowed && isVariantArray(campaign.variants)) {
+  // Someone a prospect referred you to: a "referred" rule supplies their
+  // first email (e.g. "{{Referred By}} suggested I reach out").
+  let referralRule: { id: string; name: string } | null = null;
+  if (
+    !usesStep &&
+    recipient.referred_by_recipient_id &&
+    campaignPlan &&
+    hasFeature(campaignPlan, "conditional_sequences")
+  ) {
+    const { data: ref } = await db
+      .from("follow_up_rules")
+      .select("id, name, emails:follow_up_rule_emails(subject, template, position)")
+      .eq("campaign_id", campaign.id)
+      .eq("enabled", true)
+      .contains("situations", ["referred"])
+      .order("position", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    const first = (ref?.emails ?? []).sort((a: { position: number }, b: { position: number }) => a.position - b.position)[0];
+    if (ref && first) {
+      effectiveSubject = first.subject || campaign.subject;
+      effectiveTemplate = first.template;
+      referralRule = { id: ref.id, name: ref.name };
+    }
+  }
+  if (!usesStep && !referralRule && abAllowed && isVariantArray(campaign.variants)) {
     const variants = campaign.variants as Variant[];
     const sticky = pickedVariantId
       ? variants.find((v) => v.id === pickedVariantId) ?? null
@@ -978,12 +1368,14 @@ async function processCampaign(
 
   // Spintax is resolved first, seeded per recipient + step, so a retry or
   // a later preview produces the same wording that was actually sent.
-  const spinSeed = `${recipient.id}:${kind === "follow_up" ? step.step_number : 0}`;
+  const spinSeed = `${recipient.id}:${usesStep ? step.step_number : 0}`;
   const rawSubjectPreAi = spin(
-    kind === "follow_up" && step.subject ? step.subject : effectiveSubject,
+    usesStep && step.subject
+      ? step.subject
+      : nurture?.subjectBase ?? effectiveSubject,
     `${spinSeed}:subject`
   );
-  const templateSrcPreAi = spin(kind === "follow_up" ? step.template : effectiveTemplate, spinSeed);
+  const templateSrcPreAi = spin(usesStep ? step.template : effectiveTemplate, spinSeed);
 
   // ---- AI personalization ({{ai:...}} tags) ----
   // Plan-gated. Free / Starter users with AI tags in their template get
@@ -1009,8 +1401,10 @@ async function processCampaign(
 
   // Threaded follow-ups always carry exactly one "Re:" on the subject that
   // actually goes out (step override or original).
+  // A rule email can start a fresh thread (its own subject, no Re:).
+  const threaded = usesStep && step?.thread_mode !== "new";
   const subject =
-    kind === "follow_up" && recipient.message_id
+    threaded && (nurture ? !!nurture.inReplyTo : recipient.message_id)
       ? `Re: ${rawSubject.replace(/^re:\s*/i, "")}`
       : rawSubject;
 
@@ -1025,8 +1419,10 @@ async function processCampaign(
       const errMsg = `missing_merge_field:${allMissing.join(",")}`;
       // Initial sends → status='skipped' so the row doesn't loop. Follow-ups
       // → leave status='sent' but clear the next_follow_up_at so we don't
-      // try the same step again.
-      if (kind === "follow_up") {
+      // try the same step again. Nurture → only its scheduled row fails.
+      if (nurture) {
+        await setNurture({ status: "failed", error: errMsg });
+      } else if (kind === "follow_up") {
         await db
           .from("recipients")
           .update({ next_follow_up_at: null, error: errMsg, stop_reason: "merge_failed" })
@@ -1041,15 +1437,26 @@ async function processCampaign(
       // Audit row in send_log so admin metrics + the campaign timeline
       // record the skip without inflating success counts.
       await db.from("send_log").insert({
+        id: sendLogId,
         campaign_id: campaign.id,
         recipient_id: recipient.id,
         user_id: campaign.user_id,
         sender_id: chosenSenderId,
         kind,
-        step_number: kind === "follow_up" ? step.step_number : null,
+        step_number: usesStep ? step.step_number : null,
+        rule_id: usesStep ? step.rule_id ?? null : null,
+        rule_email_id: usesStep ? step.rule_email_id ?? null : null,
         sent_at: nowIso,
         day: today,
         error_class: "missing_merge_field",
+      });
+      await recordEvent(db, {
+        ...who,
+        type: "skipped",
+        send_log_id: sendLogId,
+        step_number: stepNo,
+        data: { reason: "missing_merge_field", missing: allMissing },
+        dedupe_key: `send:${sendLogId}`,
       });
       return NextResponse.json({
         status: "skipped_missing_merge_fields",
@@ -1063,17 +1470,17 @@ async function processCampaign(
   const body = render(templateSrc, vars);
 
   const base = appUrl();
-  const unsubToken = campaign.unsubscribe_enabled ? signToken("u", recipient.id) : null;
+  const unsubToken = campaign.unsubscribe_enabled ? signMessageToken("u", recipient.id, sendLogId) : null;
   // Footer link → human confirm page. Header → RFC 8058 one-click POST
   // endpoint (the page route can't accept POST).
   const unsubUrl = unsubToken ? `${base}/u/${unsubToken}` : undefined;
   const oneClickUnsubUrl = unsubToken ? `${base}/api/unsubscribe?token=${unsubToken}` : undefined;
   const openPixelUrl = campaign.tracking_enabled
-    ? `${base}/api/t/o/${signToken("o", recipient.id)}.gif`
+    ? `${base}/api/t/o/${signMessageToken("o", recipient.id, sendLogId)}.gif`
     : undefined;
   const wrapUrl = campaign.tracking_enabled
     ? (url: string) => {
-        const t = signToken("c", recipient.id);
+        const t = signMessageToken("c", recipient.id, sendLogId);
         return `${base}/api/t/c/${t}?u=${encodeURIComponent(url)}&s=${signClickUrl(t, url)}`;
       }
     : undefined;
@@ -1105,7 +1512,11 @@ async function processCampaign(
   }
   // Thread follow-ups as replies to the initial message so Gmail groups them.
   // RFC 5322 requires Message-IDs to be angle-bracket wrapped.
-  if (kind === "follow_up" && recipient.message_id) {
+  if (threaded && nurture?.inReplyTo) {
+    // Continue the conversation they replied in.
+    headers["In-Reply-To"] = nurture.inReplyTo;
+    headers["References"] = nurture.references.join(" ");
+  } else if (threaded && !nurture && recipient.message_id) {
     const normalized = recipient.message_id.startsWith("<")
       ? recipient.message_id
       : `<${recipient.message_id}>`;
@@ -1116,15 +1527,19 @@ async function processCampaign(
   // ---- send ----
   let sentMessageId: string | null = null;
   let sentThreadId: string | null = null;
+  let sentProviderId: string | null = null;
+  let smtpResponse: string | null = null;
   // Gmail thread ids are per-mailbox, so only reuse it from the same sender.
   const threadId =
-    kind === "follow_up" && recipient.gmail_thread_id && recipient.sender_id === chosenSenderId
+    threaded && recipient.gmail_thread_id && recipient.sender_id === chosenSenderId
       ? recipient.gmail_thread_id
       : null;
   try {
     const result = await sendMail({ to: recipient.email, subject, text, html, sender, attachments, headers, threadId });
     sentMessageId = result.messageId;
     sentThreadId = result.threadId ?? null;
+    sentProviderId = result.providerMessageId ?? null;
+    smtpResponse = result.response ?? null;
     // Persist any refreshed OAuth access token so the next tick doesn't have
     // to round-trip through Google again. Update the sender that actually
     // ran (chosenSenderId), which may differ from campaign.sender_id under
@@ -1172,7 +1587,8 @@ async function processCampaign(
         .eq("id", campaign.id)
         .eq("status", "running");
       await emitCampaignPaused(db, campaign as { id: string; user_id: string; name: string }, "sender_auth");
-      await db
+      if (nurture) await setNurture({ status: "scheduled", due_at: nowIso, error: msg.slice(0, 500) });
+      else await db
         .from("recipients")
         .update(
           kind === "follow_up"
@@ -1181,15 +1597,26 @@ async function processCampaign(
         )
         .eq("id", recipient.id);
       await db.from("send_log").insert({
+        id: sendLogId,
         campaign_id: campaign.id,
         recipient_id: recipient.id,
         user_id: campaign.user_id,
         sender_id: chosenSenderId,
         kind,
-        step_number: kind === "follow_up" ? step.step_number : null,
+        step_number: usesStep ? step.step_number : null,
+        rule_id: usesStep ? step.rule_id ?? null : null,
+        rule_email_id: usesStep ? step.rule_email_id ?? null : null,
         sent_at: nowIso,
         day: today,
         error_class: errorClass,
+      });
+      await recordEvent(db, {
+        ...who,
+        type: "send_failed",
+        send_log_id: sendLogId,
+        step_number: stepNo,
+        data: { error_class: errorClass, error: msg.slice(0, 300), campaign_paused: true, will_retry: true },
+        dedupe_key: `send:${sendLogId}`,
       });
       return NextResponse.json({
         status: "campaign_paused_sender_auth",
@@ -1197,6 +1624,45 @@ async function processCampaign(
         to: recipient.email,
         error: msg,
       });
+    }
+    if (nurture) {
+      const attempts = nurture.attempts + 1;
+      const authProblem = errorClass === "auth_revoked" || errorClass === "auth_failed";
+      const permanent = isHardBounce(e);
+      const retry = !permanent && (authProblem || attempts < FOLLOW_UP_MAX_ATTEMPTS);
+      const retryAt = new Date(now.getTime() + (authProblem ? 60 : 30 * attempts) * 60 * 1000).toISOString();
+      await setNurture(
+        retry
+          ? { status: "scheduled", due_at: retryAt, attempts: authProblem ? nurture.attempts : attempts, error: msg.slice(0, 500) }
+          : { status: "failed", attempts, error: msg.slice(0, 500) }
+      );
+      await db.from("send_log").insert({
+        id: sendLogId,
+        campaign_id: campaign.id,
+        recipient_id: recipient.id,
+        user_id: campaign.user_id,
+        sender_id: chosenSenderId,
+        kind,
+        step_number: step.step_number,
+        rule_id: step.rule_id ?? null,
+        rule_email_id: step.rule_email_id ?? null,
+        sent_at: nowIso,
+        day: today,
+        error_class: errorClass,
+      });
+      await recordEvent(db, {
+        ...who,
+        type: "send_failed",
+        send_log_id: sendLogId,
+        step_number: stepNo,
+        data: { kind: "nurture", error_class: errorClass, error: msg.slice(0, 300), will_retry: retry, retry_at: retry ? retryAt : null },
+        dedupe_key: `send:${sendLogId}`,
+      });
+      if (permanent) {
+        await suppressEmail(db, campaign.user_id, recipient.email, "bounced", campaign.id);
+        await emitBounced(db, rcpt, msg, { source: "smtp", send_log_id: sendLogId, step: stepNo });
+      }
+      return NextResponse.json({ status: retry ? "nurture_failed_will_retry" : "send_failed", to: recipient.email, kind, error: msg, error_class: errorClass });
     }
     // Follow-up failures: auth problems wait for the mailbox to be fixed
     // (the sequence isn't the recipient's fault); transient errors retry the
@@ -1226,23 +1692,34 @@ async function processCampaign(
               }
         )
         .eq("id", recipient.id);
-      if (permanent) {
-        await suppressEmail(db, campaign.user_id, recipient.email, "bounced", campaign.id);
-        await emitBounced(db, rcpt, msg);
-        await maybePauseForBounces(db, campaign.id);
-      }
-      if (!retry) await emitSequenceStopped(db, rcpt, permanent ? "bounced" : "send_failed", recipient.follow_up_count ?? 0);
       await db.from("send_log").insert({
+        id: sendLogId,
         campaign_id: campaign.id,
         recipient_id: recipient.id,
         user_id: campaign.user_id,
         sender_id: chosenSenderId,
         kind,
         step_number: step.step_number,
+        rule_id: step.rule_id ?? null,
+        rule_email_id: step.rule_email_id ?? null,
         sent_at: nowIso,
         day: today,
         error_class: errorClass,
       });
+      await recordEvent(db, {
+        ...who,
+        type: "send_failed",
+        send_log_id: sendLogId,
+        step_number: stepNo,
+        data: { error_class: errorClass, error: msg.slice(0, 300), will_retry: retry, retry_at: retry ? retryAt : null },
+        dedupe_key: `send:${sendLogId}`,
+      });
+      if (permanent) {
+        await suppressEmail(db, campaign.user_id, recipient.email, "bounced", campaign.id);
+        await emitBounced(db, rcpt, msg, { source: "smtp", send_log_id: sendLogId, step: stepNo });
+        await maybePauseForBounces(db, campaign.id);
+      }
+      if (!retry) await emitSequenceStopped(db, rcpt, permanent ? "bounced" : "send_failed", recipient.follow_up_count ?? 0);
       return NextResponse.json({
         status: retry ? "follow_up_failed_will_retry" : "send_failed",
         to: recipient.email,
@@ -1264,6 +1741,13 @@ async function processCampaign(
           last_sent_at: null, // not in flight any more
         })
         .eq("id", recipient.id);
+      await recordEvent(db, {
+        ...who,
+        type: "send_failed",
+        step_number: stepNo,
+        data: { error_class: errorClass, error: msg.slice(0, 300), will_retry: true, retry_at: nextRetry.toISOString() },
+        dedupe_key: `send:${sendLogId}`,
+      });
       return NextResponse.json({
         status: "send_failed_will_retry",
         to: recipient.email,
@@ -1279,14 +1763,10 @@ async function processCampaign(
       .from("recipients")
       .update(hard ? { status: "bounced", stop_reason: "bounced", error: msg } : { status: "failed", error: msg })
       .eq("id", recipient.id);
-    if (hard) {
-      await suppressEmail(db, campaign.user_id, recipient.email, "bounced", campaign.id);
-      await emitBounced(db, rcpt, msg);
-      await maybePauseForBounces(db, campaign.id);
-    }
     // Log the failure into send_log so admin metrics group by error_class
     // can compute error rate without scanning recipients.
     await db.from("send_log").insert({
+      id: sendLogId,
       campaign_id: campaign.id,
       recipient_id: recipient.id,
       user_id: campaign.user_id,
@@ -1297,11 +1777,28 @@ async function processCampaign(
       day: today,
       error_class: errorClass,
     });
+    if (hard) {
+      await suppressEmail(db, campaign.user_id, recipient.email, "bounced", campaign.id);
+      await emitBounced(db, rcpt, msg, { source: "smtp", send_log_id: sendLogId, step: stepNo });
+      await maybePauseForBounces(db, campaign.id);
+    } else {
+      await recordEvent(db, {
+        ...who,
+        type: "send_failed",
+        send_log_id: sendLogId,
+        step_number: stepNo,
+        data: { error_class: errorClass, error: msg.slice(0, 300), will_retry: false },
+        dedupe_key: `send:${sendLogId}`,
+      });
+    }
     return NextResponse.json({ status: "send_failed", to: recipient.email, kind, error: msg, error_class: errorClass }, { status: 200 });
   }
 
   // ---- success updates ----
-  if (kind === "initial" || kind === "retry") {
+  if (nurture) {
+    // Their sequence fields stay as they are; only note we wrote.
+    await db.from("recipients").update({ last_sent_at: nowIso, error: null }).eq("id", recipient.id);
+  } else if (kind === "initial" || kind === "retry") {
     const update: Record<string, unknown> = {
       status: "sent",
       sent_at: nowIso,
@@ -1331,11 +1828,59 @@ async function processCampaign(
     // Schedule the first follow-up. Its condition is checked when it
     // comes due, not now.
     const first = followUpsActive ? stepAfter(steps, 0) : null;
-    if (first) {
+    if (engine) {
+      // Rules mode: first check when whichever rule matches a fresh
+      // recipient (usually "didn't open") is due. A later open/click
+      // re-decides through reeval_pending.
+      const after = { ...recipient, follow_up_count: 0, sent_at: nowIso, last_sent_at: nowIso, next_step_number: first?.step_number ?? null, sent_rule_email_ids: [] };
+      const next = decide(engine, await engineRecipient(db, engine, after, now), { hasReplied: false, lastIntent: null }, now);
+      update.next_step_number = first?.step_number ?? null;
+      if (next.kind !== "end") {
+        update.next_follow_up_at = withJitter(next.due).toISOString();
+        update.current_rule_id = choiceLabel(next.choice).rule_id;
+      }
+    } else if (first) {
       update.next_follow_up_at = withJitter(addDelay(now, first.delay_days, first.delay_unit, tz)).toISOString();
       update.next_step_number = first.step_number;
     }
     await db.from("recipients").update(update).eq("id", recipient.id);
+  } else if (kind === "follow_up" && engine && decision) {
+    // Rules mode: record progress, then ask the engine when to look again.
+    const choice = decision.choice;
+    const nextStepNumber =
+      choice.source === "fallback"
+        ? stepAfter(steps, choice.step.step_number)?.step_number ?? null
+        : recipient.next_step_number ?? null;
+    const sentRuleEmailIds: string[] =
+      choice.source === "rule"
+        ? [...(recipient.sent_rule_email_ids ?? []), choice.email.id]
+        : recipient.sent_rule_email_ids ?? [];
+    const after = {
+      ...recipient,
+      follow_up_count: recipient.follow_up_count + 1,
+      last_sent_at: nowIso,
+      next_step_number: nextStepNumber,
+      sent_rule_email_ids: sentRuleEmailIds,
+    };
+    const next = decide(engine, await engineRecipient(db, engine, after, now), await replyContextFor(db, engine, recipient.id), now);
+    await db
+      .from("recipients")
+      .update({
+        follow_up_count: recipient.follow_up_count + 1,
+        last_sent_at: nowIso,
+        next_step_number: nextStepNumber,
+        sent_rule_email_ids: sentRuleEmailIds,
+        current_rule_id: choiceLabel(choice).rule_id,
+        next_follow_up_at: next.kind === "end" ? null : withJitter(next.due).toISOString(),
+        ...(next.kind === "end" ? { stop_reason: "completed" } : {}),
+        reeval_pending: false,
+        follow_up_attempts: 0,
+        error: null,
+      })
+      .eq("id", recipient.id);
+    if (next.kind === "end") {
+      await emitSequenceStopped(db, rcpt, "completed", recipient.follow_up_count ?? 0, { why: next.why });
+    }
   } else if (kind === "follow_up") {
     const next = stepAfter(steps, step.step_number);
     await db
@@ -1355,27 +1900,57 @@ async function processCampaign(
     if (!next) await emitSequenceStopped(db, rcpt, "completed", recipient.follow_up_count ?? 0);
   }
 
-  await emitEmailSent(db, rcpt, {
-    kind,
-    step: kind === "follow_up" ? step.step_number : 0,
-    sender_email: sender.email,
-    message_id: sentMessageId,
-  });
-
+  const normalizedMessageId = sentMessageId
+    ? sentMessageId.startsWith("<") ? sentMessageId : `<${sentMessageId}>`
+    : null;
+  // send_log first: the activity-log entry references it.
   await db.from("send_log").insert({
+    id: sendLogId,
     campaign_id: campaign.id,
     recipient_id: recipient.id,
     user_id: campaign.user_id,
     sender_id: chosenSenderId,
     kind,
-    step_number: kind === "follow_up" ? step.step_number : null,
+    step_number: usesStep ? step.step_number : null,
+    rule_id: usesStep ? step.rule_id ?? null : null,
+    rule_email_id: usesStep ? step.rule_email_id ?? null : null,
     sent_at: nowIso,
     day: today,
+    message_id: normalizedMessageId,
+    provider_message_id: sentProviderId,
+    smtp_response: smtpResponse?.slice(0, 500) ?? null,
   });
+
+  await emitEmailSent(db, rcpt, {
+    kind,
+    step: stepNo,
+    sender_email: sender.email,
+    message_id: sentMessageId,
+    send_log_id: sendLogId,
+    subject,
+    thread_id: sentThreadId ?? (usesStep ? recipient.gmail_thread_id ?? null : null),
+    variant_id: pickedVariantId,
+    smtp_response: smtpResponse,
+    detail: referralRule
+      ? { rule_id: referralRule.id, rule_name: referralRule.name, because: ["referred"] }
+      : nurture
+      ? { rule_id: nurture.rule_id, rule_name: step?.rule_name ?? null, because: [nurture.kind === "not_now" ? "replied_not_now" : "thread_stalled"], thread_mode: step?.thread_mode ?? "same" }
+      : decision
+      ? (() => {
+          const l = choiceLabel(decision.choice);
+          return { rule_id: l.rule_id, rule_name: l.rule_name, because: l.matched, thread_mode: step?.thread_mode ?? "same" };
+        })()
+      : undefined,
+  });
+
+  if (nurture) {
+    await setNurture({ status: "sent", sent_at: nowIso, send_log_id: sendLogId, error: null });
+    await scheduleNextNurture(db, nurture, now, tz);
+  }
 
   // A/B auto-pick: re-evaluate every 20 first sends once a threshold is set.
   if (
-    kind !== "follow_up" &&
+    !usesStep &&
     pickedVariantId &&
     !campaign.ab_winner_id &&
     campaign.ab_winner_threshold &&

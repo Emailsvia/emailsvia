@@ -38,6 +38,28 @@ export function verifyToken(kind: "u" | "o" | "c", token: string): string | null
   }
 }
 
+// Per-email tokens for the pixel, click redirect and unsubscribe link:
+// `<recipientId>~<sendLogId>.<sig>`, so an open/click/unsubscribe is tied to
+// the exact email (send_log row) that carried it. Tokens in mail sent before
+// this existed are recipient-only (`<recipientId>.<sig>`) and still verify,
+// with sendLogId null. The signature covers both ids.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function signMessageToken(kind: "u" | "o" | "c", recipientId: string, sendLogId: string | null) {
+  return signToken(kind, sendLogId ? `${recipientId}~${sendLogId}` : recipientId);
+}
+
+export function verifyMessageToken(
+  kind: "u" | "o" | "c",
+  token: string
+): { recipientId: string; sendLogId: string | null } | null {
+  const id = verifyToken(kind, token);
+  if (!id) return null;
+  const [recipientId, sendLogId = null] = id.split("~");
+  if (!UUID.test(recipientId) || (sendLogId !== null && !UUID.test(sendLogId))) return null;
+  return { recipientId, sendLogId };
+}
+
 // Click-tracking redirect signature: binds the destination URL to the click
 // token so /api/t/c can't be used as an open redirect with a harvested token.
 export function signClickUrl(token: string, url: string): string {

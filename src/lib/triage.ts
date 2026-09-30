@@ -18,6 +18,8 @@ export type ReplyIntent =
   | "unsubscribe"
   | "ooo"
   | "bounce"
+  | "wrong_person"
+  | "left_company"
   | "other";
 
 const IntentSchema = z.object({
@@ -28,6 +30,8 @@ const IntentSchema = z.object({
     "unsubscribe",
     "ooo",
     "bounce",
+    "wrong_person",
+    "left_company",
     "other",
   ]),
   // Calibrated probability the model assigns to the chosen intent. Used by
@@ -43,7 +47,7 @@ const IntentSchema = z.object({
 // classifier still works — just at full per-request input price.)
 const SYSTEM_PROMPT = `You are a triage classifier for cold-email replies received by sales reps using EmailsVia.
 
-The rep sent an outbound cold-email campaign. You receive the inbound reply (or what looks like a reply) and assign exactly one of seven intent labels plus a calibrated confidence between 0.0 and 1.0.
+The rep sent an outbound cold-email campaign. You receive the inbound reply (or what looks like a reply) and assign exactly one of nine intent labels plus a calibrated confidence between 0.0 and 1.0.
 
 LABELS — pick exactly one:
 
@@ -58,6 +62,10 @@ LABELS — pick exactly one:
 - "ooo": Out-of-office auto-replies, vacation responders, parental leave, "I'm currently away until X". Often have subject lines like "Automatic reply:" or "Out of office:". Body usually mentions a return date or alternate contact. Not a real reply from the recipient — just an auto-responder.
 
 - "bounce": Mailer-daemon, postmaster, undeliverable notices, "Your message wasn't delivered", "Address not found", DSN reports. The check-replies pipeline already filters obvious bounces upstream, so anything reaching this classifier should rarely be a bounce — but if you see one, label it.
+
+- "wrong_person": A human says they're not the right contact: "not my area", "I don't handle this", "try our procurement team at procurement@bigco.com", "you want to talk to Sarah". Often names someone else. Not a refusal of the product itself (that's "not_now"), and not a removal request (that's "unsubscribe").
+
+- "left_company": The person no longer works there: "Jane has left the company", "no longer with Acme", "this mailbox is no longer monitored", often as an automatic reply from the old address, sometimes naming a replacement. Pick this over "ooo" when the absence is permanent.
 
 - "other": Genuine human reply that doesn't fit the above. Spam, off-topic, mistaken sends, single-word responses with no context ("ok", "thanks"), forwarded internal threads, automated alerts that aren't OOO/bounce. Use sparingly — most replies will fit one of the first six.
 
@@ -106,7 +114,11 @@ Body: Stop emailing me. This is the third time. I will report you for spam.
 
 Subject: Re: Quick question about your sales process
 Body: Not the right person — try our procurement team at procurement@bigco.com.
-→ {"intent": "other", "confidence": 0.78}
+→ {"intent": "wrong_person", "confidence": 0.9}
+
+Subject: Automatic reply: Quick question about your sales process
+Body: Thank you for your email. Sam no longer works at Acme. For sales enquiries please contact priya@acme.com. This mailbox is not monitored.
+→ {"intent": "left_company", "confidence": 0.96}
 
 Subject: Re: Quick question about your sales process
 Body: ok

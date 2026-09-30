@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { withApi, apiOptions, apiError, readJson } from "@/lib/public-api";
+import { loadRules } from "@/lib/followup-rules";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,11 +13,12 @@ type P = { id: string };
 export const GET = withApi<P>(async (_req: NextRequest, { userId, db }, { id }) => {
   const { data: campaign } = await db
     .from("campaigns")
-    .select("id, name, status, paused_reason, subject, template, sender_id, timezone, schedule, daily_cap, gap_seconds, follow_ups_enabled, unsubscribe_enabled, tracking_enabled, strict_merge, stop_on_domain_reply, created_at, updated_at")
+    .select("id, name, status, paused_reason, subject, template, sender_id, timezone, schedule, daily_cap, gap_seconds, follow_ups_enabled, unsubscribe_enabled, tracking_enabled, strict_merge, stop_on_domain_reply, max_follow_ups, min_gap_days, send_time_optimization, created_at, updated_at")
     .eq("id", id)
     .eq("user_id", userId)
     .maybeSingle();
   if (!campaign) return apiError(404, "not_found");
+  const rules = await loadRules(db, id);
 
   const count = async (statuses: string[]) => {
     const { count } = await db
@@ -40,6 +42,7 @@ export const GET = withApi<P>(async (_req: NextRequest, { userId, db }, { id }) 
   return NextResponse.json({
     campaign,
     follow_ups: steps.data ?? [],
+    rules,
     stats: {
       pending, sent, replied, bounced, unsubscribed, skipped, failed,
       reply_rate: sent > 0 ? Math.round((replied / sent) * 1000) / 10 : 0,

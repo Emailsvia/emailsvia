@@ -118,6 +118,11 @@ export type SendResult = {
   messageId: string;
   // Gmail API thread id (OAuth senders only).
   threadId?: string | null;
+  // Gmail API message id (OAuth) — the provider's handle on this email.
+  providerMessageId?: string | null;
+  // The server's acceptance line (SMTP "250 2.0.0 OK …"); the closest thing
+  // to a delivery receipt we get.
+  response?: string | null;
   // Populated only for OAuth senders when we had to refresh the access
   // token mid-send. Caller must persist these to the senders row so the
   // next tick doesn't re-refresh.
@@ -158,6 +163,8 @@ export async function sendMail(args: {
     return {
       messageId: res.messageId,
       threadId: res.threadId || null,
+      providerMessageId: res.gmailId || null,
+      response: res.gmailId ? "accepted by Gmail API" : null,
       tokensRefreshed: res.tokensRefreshed,
     };
   }
@@ -176,7 +183,7 @@ export async function sendMail(args: {
       attachments: args.attachments,
       headers: args.headers,
     });
-    return { messageId: info.messageId };
+    return { messageId: info.messageId, response: typeof info.response === "string" ? info.response : null };
   } catch (e) {
     // SMTP session might be stale/broken — drop the cached transporter so the
     // next send rebuilds a fresh connection instead of retrying a dead socket.

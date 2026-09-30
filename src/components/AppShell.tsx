@@ -20,6 +20,7 @@ const NAV: NavSection[] = [
       { href: "/app",          label: "Campaigns", icon: IconCampaign },
       { href: "/app/replies",  label: "Replies",   icon: IconReply    },
       { href: "/app/senders",  label: "Senders",   icon: IconMail     },
+      { href: "/app/templates", label: "Templates", icon: IconTemplate },
     ],
   },
   {
@@ -550,6 +551,13 @@ function IconReply({ className = "" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
       <path d="M9 17l-5-5 5-5M4 12h11a5 5 0 015 5v2" />
+    </svg>
+  );
+}
+function IconTemplate({ className = "" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M14 3H6a2 2 0 00-2 2v14a2 2 0 002 2h12a2 2 0 002-2V9l-6-6zM14 3v6h6M8 13h8M8 17h5" />
     </svg>
   );
 }

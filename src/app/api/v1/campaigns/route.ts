@@ -3,6 +3,7 @@ import { z } from "zod";
 import { withApi, apiOptions, apiError, readJson } from "@/lib/public-api";
 import { hasFeature } from "@/lib/billing";
 import { isValidTimeZone } from "@/lib/time";
+import { RuleSchema, normaliseRuleParams } from "@/lib/followup-rules";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -37,6 +38,11 @@ const CreateSchema = z.object({
   strict_merge: z.boolean().optional(),
   stop_on_domain_reply: z.boolean().optional(),
   follow_ups: z.array(StepInput).max(10).optional(),
+  // Activity-based rules (Growth/Scale); same shape as PUT /campaigns/:id/rules.
+  rules: z.array(RuleSchema).max(12).optional(),
+  max_follow_ups: z.number().int().min(1).max(10).optional(),
+  min_gap_days: z.number().min(0).max(30).optional(),
+  send_time_optimization: z.boolean().optional(),
 });
 
 // GET /api/v1/campaigns?status=running — campaigns with recipient counts.
@@ -75,11 +81,15 @@ export const POST = withApi(async (req: NextRequest, { userId, plan, db }) => {
 
   const { data: sender } = await db.from("senders").select("id").eq("id", input.sender_id).eq("user_id", userId).maybeSingle();
   if (!sender) return apiError(400, "sender_not_found");
-  if ((input.follow_ups?.length ?? 0) > 0 && !hasFeature(plan, "follow_ups")) {
+  const hasRules = (input.rules?.length ?? 0) > 0 || !!input.send_time_optimization;
+  if (((input.follow_ups?.length ?? 0) > 0 || hasRules) && !hasFeature(plan, "follow_ups")) {
     return apiError(402, "follow_ups_not_enabled", `Follow-ups aren't included in the ${plan.name} plan.`);
   }
+  if (hasRules && !hasFeature(plan, "conditional_sequences")) {
+    return apiError(402, "rules_not_enabled", "Follow-up rules and send-time optimisation are available on Growth and Scale.");
+  }
 
-  const { follow_ups, ...fields } = input;
+  const { follow_ups, rules, max_follow_ups, min_gap_days, ...fields } = input;
   const { data: campaign, error } = await db
     .from("campaigns")
     .insert({
@@ -88,7 +98,7 @@ export const POST = withApi(async (req: NextRequest, { userId, plan, db }) => {
       status: "draft",
       unsubscribe_enabled: input.unsubscribe_enabled ?? true,
       tracking_enabled: input.tracking_enabled ?? false,
-      follow_ups_enabled: (follow_ups?.length ?? 0) > 0,
+      follow_ups_enabled: (follow_ups?.length ?? 0) > 0 || (rules?.length ?? 0) > 0,
     })
     .select("id, name, status, created_at")
     .single();
@@ -107,6 +117,16 @@ export const POST = withApi(async (req: NextRequest, { userId, plan, db }) => {
       }))
     );
     if (sErr) return apiError(500, "follow_up_insert_failed", sErr.message, { campaign_id: campaign.id });
+  }
+  if ((rules?.length ?? 0) > 0 || max_follow_ups !== undefined || min_gap_days !== undefined) {
+    // Service-role client: the campaign was just created for this user.
+    const { error: rErr } = await db.rpc("replace_follow_up_rules", {
+      p_campaign_id: campaign.id,
+      p_rules: (rules ?? []).map(normaliseRuleParams),
+      p_max_follow_ups: max_follow_ups ?? 5,
+      p_min_gap_days: min_gap_days ?? 2,
+    });
+    if (rErr) return apiError(500, "rules_insert_failed", rErr.message, { campaign_id: campaign.id });
   }
   return NextResponse.json({ campaign }, { status: 201 });
 });

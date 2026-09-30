@@ -1,19 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
-import { requestOrigin, verifyToken } from "@/lib/tokens";
+import { requestOrigin, verifyMessageToken } from "@/lib/tokens";
+import { recordEvents, stepOf } from "@/lib/activity";
 import { dispatch as fireWebhook } from "@/lib/webhooks";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-async function process(token: string) {
-  const id = verifyToken("u", token);
-  if (!id) return { ok: false, status: 400 as const, msg: "invalid_token" };
+async function process(token: string, method: "one_click" | "confirm_page") {
+  const ref = verifyMessageToken("u", token);
+  if (!ref) return { ok: false, status: 400 as const, msg: "invalid_token" };
   const db = supabaseAdmin();
   const { data: r } = await db
     .from("recipients")
     .select("id, email, campaign_id, user_id")
-    .eq("id", id)
+    .eq("id", ref.recipientId)
     .maybeSingle();
   if (!r) return { ok: false, status: 404 as const, msg: "not_found" };
   // Per-user unsubscribe list (PK is now (user_id, email)). Only mark this
@@ -25,11 +26,40 @@ async function process(token: string) {
       { user_id: r.user_id, email: r.email, campaign_id: r.campaign_id },
       { onConflict: "user_id,email" }
     );
-  await db
+  const { data: affected } = await db
     .from("recipients")
     .update({ status: "unsubscribed", next_follow_up_at: null })
     .eq("user_id", r.user_id)
-    .eq("email", r.email);
+    .eq("email", r.email)
+    .select("id, campaign_id, user_id, stop_reason");
+  // Record why each sequence ended (leave an earlier reason, e.g. replied).
+  const unstopped = (affected ?? []).filter((a) => !a.stop_reason).map((a) => a.id);
+  if (unstopped.length > 0) {
+    await db.from("recipients").update({ stop_reason: "unsubscribed" }).in("id", unstopped);
+  }
+
+  // Which email they unsubscribed from (per-email tokens only).
+  const { data: email } = ref.sendLogId
+    ? await db
+        .from("send_log")
+        .select("id, kind, step_number")
+        .eq("id", ref.sendLogId)
+        .eq("recipient_id", r.id)
+        .maybeSingle()
+    : { data: null };
+  await recordEvents(
+    db,
+    (affected ?? []).map((a) => ({
+      user_id: a.user_id,
+      campaign_id: a.campaign_id,
+      recipient_id: a.id,
+      type: "unsubscribed" as const,
+      send_log_id: a.id === r.id ? email?.id ?? null : null,
+      step_number: a.id === r.id ? stepOf(email) : null,
+      data: { method, from_campaign_id: r.campaign_id, via_recipient_id: a.id === r.id ? undefined : r.id },
+      dedupe_key: "unsubscribed",
+    }))
+  );
   // Webhook event_id keyed on user+email (not recipient_id) so the same
   // unsub across multiple campaigns of the same user fires once.
   await fireWebhook(db, {
@@ -51,11 +81,13 @@ async function process(token: string) {
 //   - The /u/[token] confirm page, which POSTs JSON `{ token }`.
 export async function POST(req: NextRequest) {
   let token = req.nextUrl.searchParams.get("token") || "";
+  // The header link carries ?token=; the confirm page posts JSON.
+  const method = token ? "one_click" : "confirm_page";
   if (!token && (req.headers.get("content-type") ?? "").includes("application/json")) {
     const body = await req.json().catch(() => null);
     token = typeof body?.token === "string" ? body.token : "";
   }
-  const res = await process(token);
+  const res = await process(token, method);
   if (!res.ok) return NextResponse.json({ error: res.msg }, { status: res.status });
   return NextResponse.json({ ok: true });
 }

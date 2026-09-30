@@ -8,7 +8,7 @@ import { applyIntentActions } from "@/lib/reply-actions";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const INTENTS = ["interested", "not_now", "question", "unsubscribe", "ooo", "bounce", "other"] as const;
+const INTENTS = ["interested", "not_now", "question", "unsubscribe", "wrong_person", "left_company", "ooo", "bounce", "other"] as const;
 
 // One reply with everything the drawer needs: the inbound message, what we
 // sent back from EmailsVia, and the recipient's sequence state. Opening it

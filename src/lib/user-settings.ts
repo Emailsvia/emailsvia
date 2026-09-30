@@ -5,6 +5,8 @@ export type UserSettings = {
   poll_replies: boolean;
   meeting_link: string | null;
   notify_interested: boolean;
+  // Secret for /api/inbound/meetings/<token> (null = not set up).
+  meetings_token: string | null;
 };
 
 const DEFAULTS: UserSettings = {
@@ -12,6 +14,7 @@ const DEFAULTS: UserSettings = {
   poll_replies: false,
   meeting_link: null,
   notify_interested: true,
+  meetings_token: null,
 };
 
 // Returns the user's saved settings, or the all-off defaults when no row
@@ -21,7 +24,7 @@ export async function loadUserSettings(userId: string): Promise<UserSettings> {
   const db = supabaseAdmin();
   const { data } = await db
     .from("user_settings")
-    .select("tracking_enabled_default, poll_replies, meeting_link, notify_interested")
+    .select("tracking_enabled_default, poll_replies, meeting_link, notify_interested, meetings_token")
     .eq("user_id", userId)
     .maybeSingle();
   if (!data) return DEFAULTS;
@@ -30,6 +33,7 @@ export async function loadUserSettings(userId: string): Promise<UserSettings> {
     poll_replies: !!data.poll_replies,
     meeting_link: data.meeting_link ?? null,
     notify_interested: data.notify_interested !== false,
+    meetings_token: data.meetings_token ?? null,
   };
 }
 

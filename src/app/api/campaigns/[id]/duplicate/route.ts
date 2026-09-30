@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseUser } from "@/lib/supabase-server";
 import { getUser } from "@/lib/auth-server";
+import { loadRules } from "@/lib/followup-rules";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -56,6 +57,20 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       delay_unit: s.delay_unit ?? "days",
     }));
     await db.from("follow_up_steps").insert(cloneSteps);
+  }
+
+  // copy activity-based rules (fresh ids; limits came along with the row)
+  const rules = await loadRules(db, id);
+  if (rules.length > 0) {
+    await db.rpc("replace_follow_up_rules", {
+      p_campaign_id: dup.id,
+      p_rules: rules.map(({ id: _rid, position: _rp, emails, ...r }) => ({
+        ...r,
+        emails: emails.map(({ id: _eid, position: _ep, ...e }) => e),
+      })),
+      p_max_follow_ups: dup.max_follow_ups ?? 5,
+      p_min_gap_days: dup.min_gap_days ?? 2,
+    });
   }
 
   return NextResponse.json({ campaign: dup });

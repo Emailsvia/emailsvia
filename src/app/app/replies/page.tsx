@@ -74,6 +74,7 @@ export default function RepliesPage() {
   const intentCounts = useMemo(() => {
     const counts: Record<Intent, number> = {
       interested: 0, question: 0, not_now: 0, unsubscribe: 0,
+      wrong_person: 0, left_company: 0,
       ooo: 0, bounce: 0, other: 0, uncategorized: 0,
     };
     for (const r of replies ?? []) {

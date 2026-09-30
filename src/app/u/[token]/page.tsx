@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { supabaseAdmin } from "@/lib/supabase";
-import { verifyToken } from "@/lib/tokens";
+import { verifyMessageToken } from "@/lib/tokens";
 import UnsubscribeClient from "./UnsubscribeClient";
 import Logo from "@/components/Logo";
 
@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 export default async function UnsubscribePage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
-  const id = verifyToken("u", token);
+  const id = verifyMessageToken("u", token)?.recipientId ?? null;
 
   if (!id) {
     return (

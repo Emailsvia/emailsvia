@@ -3,6 +3,12 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
+import FollowUpRules, {
+  RULE_PLACEHOLDER,
+  draftsToPayload,
+  rulesToDrafts,
+  type RuleDraft,
+} from "@/components/FollowUpRules";
 import { render, spin, toHtml, extractTags } from "@/lib/template";
 import { DEFAULT_SCHEDULE, type Schedule } from "@/lib/supabase";
 import ScheduleEditor from "@/components/ScheduleEditor";
@@ -68,11 +74,14 @@ export default function CampaignForm({
   mode,
   initial,
   initialSteps,
+  initialRules,
   trackingDefault = false,
 }: {
   mode: "new" | "edit";
   initial?: CampaignInitial;
   initialSteps?: FollowUpStep[];
+  // GET /api/campaigns/[id]/follow-up-rules
+  initialRules?: { rules: Array<Record<string, any>>; max_follow_ups: number; min_gap_days: number; send_time_optimization?: boolean };
   trackingDefault?: boolean;
 }) {
   const router = useRouter();
@@ -150,6 +159,15 @@ export default function CampaignForm({
 
   // ---------- follow-up steps ----------
   const [steps, setSteps] = useState<FollowUpStep[]>(initialSteps ?? []);
+  // Activity-based rules ("Smart follow-ups"), checked before the steps.
+  const [rules, setRules] = useState<RuleDraft[]>(() => rulesToDrafts(initialRules?.rules ?? []));
+  const [ruleLimits, setRuleLimits] = useState({
+    maxFollowUps: initialRules?.max_follow_ups ?? 5,
+    minGapDays: initialRules?.min_gap_days ?? 2,
+    sendTimeOptimization: initialRules?.send_time_optimization ?? false,
+  });
+  // How many people in the sequence no rule matches right now (edit mode).
+  const [fallbackCount, setFallbackCount] = useState<number | null>(null);
 
   // ---------- attachment (edit mode can upload inline) ----------
   // Pending (not yet uploaded) files — staged locally until save
@@ -167,6 +185,10 @@ export default function CampaignForm({
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const recipientFileInputRef = useRef<HTMLInputElement | null>(null);
+  // Saving a new campaign is several requests (create, import recipients,
+  // attachments, follow-ups). If a later one fails, the next save must reuse
+  // the draft already created rather than create a second campaign.
+  const draftRef = useRef<{ id: string; recipients: boolean; attachments: boolean } | null>(null);
   const MAX_ATTACHMENTS = 5;
 
   const [saving, setSaving] = useState(false);
@@ -371,7 +393,9 @@ export default function CampaignForm({
     }
   }
 
-  async function sendTestEmail(opts: { withFollowUps?: boolean } = {}) {
+  async function sendTestEmail(
+    opts: { withFollowUps?: boolean; stepsOverride?: { subject: string | null; template: string }[] } = {}
+  ) {
     setTestMsg(null);
     if (!testEmail) { setTestMsg("Enter an email to send the test to."); return; }
     if (!senderId) { setTestMsg("Pick a sender first."); return; }
@@ -386,9 +410,11 @@ export default function CampaignForm({
       fd.append("template", template);
       fd.append("sender_id", senderId);
       fd.append("vars", JSON.stringify(sampleVars));
-      const testSteps = opts.withFollowUps && followUpsEnabled
-        ? steps.filter((st) => st.template.trim()).map((st) => ({ subject: st.subject, template: st.template }))
-        : [];
+      const testSteps = opts.stepsOverride
+        ? opts.stepsOverride.filter((st) => st.template.trim())
+        : opts.withFollowUps && followUpsEnabled
+          ? steps.filter((st) => st.template.trim()).map((st) => ({ subject: st.subject, template: st.template }))
+          : [];
       if (testSteps.length > 0) fd.append("steps", JSON.stringify(testSteps));
       if (initial?.id) fd.append("campaign_id", initial.id);
       for (const f of pendingAttachments) fd.append("file", f);
@@ -449,6 +475,22 @@ export default function CampaignForm({
       setErr("Every A/B variant needs a subject and a body.");
       return;
     }
+    if (followUpsEnabled) {
+      const bad = rules.findIndex((r) => r.situations.length === 0 || r.emails.some((e) => !e.template.trim()));
+      if (bad >= 0) {
+        setErr(`Rule ${bad + 1} needs at least one situation and a body for every email.`);
+        return;
+      }
+      const newThreadNoSubject = rules.findIndex((r) => r.emails.some((e) => e.thread_mode === "new" && !e.subject.trim()));
+      if (newThreadNoSubject >= 0) {
+        setErr(`Rule ${newThreadNoSubject + 1}: an email sent as a new email needs its own subject.`);
+        return;
+      }
+      if (rules.some((r) => r.emails.some((e) => RULE_PLACEHOLDER.test(e.template) || RULE_PLACEHOLDER.test(e.subject)))) {
+        setErr("A follow-up rule still has [bracketed] starter text. Replace it with your own email first.");
+        return;
+      }
+    }
     if (followUpsEnabled && steps.some((st) => /\[one-line result/.test(st.template))) {
       setErr("Follow-up step 2 still has the [bracketed] placeholder. Replace it with your own line first.");
       return;
@@ -463,18 +505,33 @@ export default function CampaignForm({
     try {
       let campaignId = initial?.id;
       if (mode === "new") {
-        const res = await fetch("/api/campaigns", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        if (!res.ok) throw new Error(await errMsg(res));
-        const { campaign } = await res.json();
-        campaignId = campaign.id;
+        if (draftRef.current) {
+          // A previous attempt already created it: update in place.
+          campaignId = draftRef.current.id;
+          const res = await fetch(`/api/campaigns/${campaignId}`, {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          if (!res.ok) throw new Error(await errMsg(res));
+        } else {
+          const res = await fetch("/api/campaigns", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          if (!res.ok) throw new Error(await errMsg(res));
+          const { campaign } = await res.json();
+          campaignId = campaign.id;
+          draftRef.current = { id: campaign.id, recipients: false, attachments: false };
+        }
+        const draft = draftRef.current!;
 
         // import recipients
-        let upRes: Response;
-        if (sourceTab === "sheets") {
+        let upRes: Response | null = null;
+        if (draft.recipients) {
+          // already imported by the earlier attempt
+        } else if (sourceTab === "sheets") {
           upRes = await fetch(`/api/campaigns/${campaignId}/recipients/sheets`, {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -485,10 +542,14 @@ export default function CampaignForm({
           fd.append("file", file!);
           upRes = await fetch(`/api/campaigns/${campaignId}/recipients`, { method: "POST", body: fd });
         }
-        if (!upRes.ok) throw new Error(await errMsg(upRes));
+        if (upRes && !upRes.ok) throw new Error(await errMsg(upRes));
+        draft.recipients = true;
 
-        for (const f of pendingAttachments) {
-          await uploadOneTo(campaignId!, f);
+        if (!draft.attachments) {
+          for (const f of pendingAttachments) {
+            await uploadOneTo(campaignId!, f);
+          }
+          draft.attachments = true;
         }
       } else {
         const res = await fetch(`/api/campaigns/${campaignId}`, {
@@ -527,10 +588,24 @@ export default function CampaignForm({
       });
       if (!fuRes.ok) throw new Error(await errMsg(fuRes));
 
+      // replace activity-based rules (ok to send none)
+      const rulesRes = await fetch(`/api/campaigns/${campaignId}/follow-up-rules`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          rules: draftsToPayload(rules),
+          max_follow_ups: ruleLimits.maxFollowUps,
+          min_gap_days: ruleLimits.minGapDays,
+          send_time_optimization: ruleLimits.sendTimeOptimization,
+        }),
+      });
+      if (!rulesRes.ok) throw new Error(await errMsg(rulesRes));
+
       router.push(`/app/campaigns/${campaignId}`);
       router.refresh();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      setErr(draftRef.current ? `${msg} Your campaign was saved as a draft; fix this and save again.` : msg);
     } finally {
       setSaving(false);
     }
@@ -976,8 +1051,40 @@ export default function CampaignForm({
                     </span>
                   </span>
                 </label>
+                <FollowUpRules
+                  campaignId={initial?.id}
+                  rules={rules}
+                  onChange={setRules}
+                  maxFollowUps={ruleLimits.maxFollowUps}
+                  minGapDays={ruleLimits.minGapDays}
+                  sendTimeOptimization={ruleLimits.sendTimeOptimization}
+                  onLimitsChange={(v) => setRuleLimits((prev) => ({ ...prev, ...v }))}
+                  trackingEnabled={trackingEnabled}
+                  onEnableTracking={() => setTrackingEnabled(true)}
+                  onTestRule={(emails) => sendTestEmail({ stepsOverride: emails })}
+                  testBusy={testBusy}
+                  onCoverage={setFallbackCount}
+                />
+
+                <div className="rule pt-5">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[14px] font-semibold">
+                      {rules.length > 0 ? "Default sequence: everyone else who hasn't replied" : "Follow-up sequence"}
+                    </span>
+                    {rules.length > 0 && fallbackCount !== null && (
+                      <span className="text-[12px] text-ink-500">{fallbackCount.toLocaleString()} people now</span>
+                    )}
+                  </div>
+                  {rules.length > 0 && (
+                    <p className="text-[12px] text-ink-500 mt-1">
+                      Used for anyone no rule above matches, and after a rule when it says &quot;try the next rule&quot;.
+                    </p>
+                  )}
+                </div>
                 {steps.length === 0 && (
-                  <p className="text-sm text-ink-500">No follow-ups yet. Add at least one.</p>
+                  <p className="text-sm text-ink-500">
+                    {rules.length > 0 ? "No default steps: people no rule matches get no follow-ups." : "No follow-ups yet. Add at least one."}
+                  </p>
                 )}
                 {steps.map((s, i) => (
                   <div key={i} className="border border-ink-200 p-5 relative">
@@ -1069,7 +1176,7 @@ export default function CampaignForm({
                         </select>
                         {(s.condition?.type === "intent_in" || s.condition?.type === "intent_not_in") && (
                           <div className="mt-2 flex flex-wrap gap-1.5">
-                            {(["interested", "question", "not_now", "unsubscribe", "ooo", "bounce", "other"] as const).map((intent) => {
+                            {(["interested", "question", "not_now", "unsubscribe", "wrong_person", "left_company", "ooo", "bounce", "other"] as const).map((intent) => {
                               const cond = s.condition as { type: string; intents: string[] };
                               const checked = cond.intents.includes(intent);
                               return (

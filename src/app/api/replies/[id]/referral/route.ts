@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { supabaseUser } from "@/lib/supabase-server";
+import { supabaseAdmin } from "@/lib/supabase";
+import { recordEvent } from "@/lib/activity";
 import { getUser } from "@/lib/auth-server";
 import { findSuppression } from "@/lib/sequence-stop";
 
@@ -28,7 +30,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   const { data: reply } = await db
     .from("replies")
     .select(`
-      id, from_email, campaign_id,
+      id, from_email, campaign_id, recipient_id,
       recipient:recipients(name, company, vars),
       campaign:campaigns(id, status)
     `)
@@ -80,6 +82,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
         vars,
         status: "pending",
         row_index: (last?.row_index ?? 0) + 1,
+        referred_by_recipient_id: reply.recipient_id ?? null,
       },
       { onConflict: "campaign_id,email", ignoreDuplicates: true }
     )
@@ -87,6 +90,19 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   if (!inserted?.length) {
     return NextResponse.json({ error: `${email} is already in this campaign.` }, { status: 409 });
+  }
+
+  // Log it on the person who referred (server-written log; the reply was
+  // loaded through RLS, so it's this user's).
+  if (reply.recipient_id) {
+    await recordEvent(supabaseAdmin(), {
+      user_id: u.id,
+      campaign_id: reply.campaign_id,
+      recipient_id: reply.recipient_id,
+      type: "referral_added",
+      data: { reply_id: reply.id, email, name, new_recipient_id: inserted[0].id },
+      dedupe_key: `referral:${email}`,
+    });
   }
 
   // A finished campaign has nothing left to send; reopen it so the new lead goes out.

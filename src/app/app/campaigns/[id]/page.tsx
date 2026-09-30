@@ -6,11 +6,13 @@ import { use, useEffect, useMemo, useState } from "react";
 import { render, toHtml } from "@/lib/template";
 import type { Schedule } from "@/lib/supabase";
 import AppShell from "@/components/AppShell";
-import ActivityDrawer, { type ActivityRecipient } from "@/components/ActivityDrawer";
+import ActivityDrawer, { type ActivityRecipient, type DrawerPerson, STOP_REASON_LABEL } from "@/components/ActivityDrawer";
 import RotationPanel from "@/components/RotationPanel";
+import ScheduledFollowups from "@/components/ScheduledFollowups";
 import PageHeader from "@/components/app/PageHeader";
 import KpiCard from "@/components/app/KpiCard";
 import StatusPill from "@/components/app/StatusPill";
+import { SITUATION_BY_KEY, type SituationKey } from "@/lib/situations";
 
 type Sender = { id: string; label: string; email: string; from_name: string | null; is_default: boolean };
 type FollowUpStep = {
@@ -29,21 +31,19 @@ function conditionLabel(c: FollowUpStep["condition"]): string | null {
   return c.type === "intent_in" ? `only if reply is: ${list}` : `unless reply is: ${list}`;
 }
 
-// Why a sequence ended early, in plain words (recipients.stop_reason).
-const STOP_REASON_LABEL: Record<string, string> = {
-  replied: "Replied, sequence stopped",
-  domain_replied: "Colleague replied, stopped",
-  bounced: "Bounced",
-  suppressed: "On do-not-contact list",
-  merge_failed: "Follow-up skipped: missing merge field",
-  send_failed: "Follow-up failed",
-  completed: "Sequence complete",
-  guard_failed: "Follow-ups stopped: couldn't read the inbox to check for replies",
+type CampaignRule = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  situations: string[];
+  then_action: "end" | "next_rule";
+  emails: Array<{ id: string; delay_value: number; delay_unit: string; anchor: string; thread_mode: string }>;
 };
+
 type Stats = {
   total: number; sent: number; replied: number; failed: number; pending: number; unsubscribed: number;
   follow_ups_sent: number; retries_sent: number;
-  opens: number; unique_opens: number; clicks: number; unique_clicks: number;
+  opens: number; machine_opens?: number; meetings_booked?: number; unique_opens: number; clicks: number; unique_clicks: number;
   rates: { open_rate: number; click_rate: number; reply_rate: number; bounce_rate: number; unsubscribe_rate: number };
   opens_by_hour: number[];
   clicks_by_hour: number[];
@@ -53,6 +53,7 @@ type Stats = {
   variants?: Array<{ id: string; sent: number; replied: number; reply_rate: number }> | null;
   suggested_winner?: string | null;
   steps?: Array<{ step: number; sent: number; replies: number; reply_rate: number; share_of_replies: number }>;
+  rules?: Array<{ rule_id: string; name: string; sent: number; people: number; replied: number; reply_rate: number }>;
   senders?: Array<{ sender_id: string; email: string; sent: number; contacted: number; reply_rate: number; bounce_rate: number }>;
   current_winner?: string | null;
 };
@@ -109,11 +110,12 @@ export default function CampaignDetail({ params }: { params: Promise<{ id: strin
   const [recipients, setRecipients] = useState<Recipient[]>([]);
   const [senders, setSenders] = useState<Sender[]>([]);
   const [steps, setSteps] = useState<FollowUpStep[]>([]);
+  const [rules, setRules] = useState<CampaignRule[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [previewIdx, setPreviewIdx] = useState(0);
   const [filter, setFilter] = useState<"all" | Recipient["status"]>("all");
   const [activity, setActivity] = useState<{ recipients: ActivityRecipient[]; links: { url: string; total_clicks: number; unique_clickers: number }[] } | null>(null);
-  const [activeRecipient, setActiveRecipient] = useState<ActivityRecipient | null>(null);
+  const [activePerson, setActivePerson] = useState<DrawerPerson | null>(null);
   const [sortByScore, setSortByScore] = useState(false);
   const [ticking, setTicking] = useState(false);
   // Dev-mode flag (toggle "Run tick" button visibility). Source of truth
@@ -138,6 +140,8 @@ export default function CampaignDetail({ params }: { params: Promise<{ id: strin
     const r = await fetch(`/api/campaigns/${id}/follow-ups`, { cache: "no-store" });
     const d = await r.json();
     setSteps(d.steps ?? []);
+    const rr = await fetch(`/api/campaigns/${id}/follow-up-rules`, { cache: "no-store" });
+    if (rr.ok) setRules(((await rr.json()).rules ?? []) as CampaignRule[]);
   }
   async function loadStats() {
     const r = await fetch(`/api/campaigns/${id}/stats`, { cache: "no-store" });
@@ -368,7 +372,10 @@ export default function CampaignDetail({ params }: { params: Promise<{ id: strin
         <KpiCard
           label="Replied"
           value={(stats?.replied ?? replied).toLocaleString()}
-          unit={stats && stats.rates.reply_rate > 0 ? `${stats.rates.reply_rate}% rate` : undefined}
+          unit={[
+            stats && stats.rates.reply_rate > 0 ? `${stats.rates.reply_rate}% rate` : null,
+            stats?.meetings_booked ? `${stats.meetings_booked} meeting${stats.meetings_booked === 1 ? "" : "s"} booked` : null,
+          ].filter(Boolean).join(" · ") || undefined}
           tone="hot"
         />
         <KpiCard
@@ -494,7 +501,7 @@ export default function CampaignDetail({ params }: { params: Promise<{ id: strin
       {/* analytics row */}
       {campaign.tracking_enabled && stats && (
         <section className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
-          <KpiCard label="Unique opens"     value={stats.unique_opens.toLocaleString()}  unit={`${stats.rates.open_rate}% of sent · ${stats.opens} total`} />
+          <KpiCard label="Unique opens"     value={stats.unique_opens.toLocaleString()}  unit={`${stats.rates.open_rate}% of sent · ${stats.opens} total${stats.machine_opens ? ` · ${stats.machine_opens} automated excluded` : ""}`} />
           <KpiCard label="Unique clicks"    value={stats.unique_clicks.toLocaleString()} unit={`${stats.rates.click_rate}% · ${stats.clicks} total`} />
           <KpiCard label="Follow-ups sent"  value={stats.follow_ups_sent.toLocaleString()} unit={stats.follow_ups_sent > 0 ? "sequence active" : undefined} />
           <KpiCard label="Unsubscribed"     value={stats.unsubscribed.toLocaleString()}   unit={stats.unsubscribed > 0 ? `${stats.rates.unsubscribe_rate}%` : undefined} />
@@ -611,10 +618,59 @@ export default function CampaignDetail({ params }: { params: Promise<{ id: strin
             </details>
           </section>
 
+          {/* follow-ups to people who replied (not now / stalled threads) */}
+          {rules.some((r) => r.situations.includes("replied_not_now") || r.situations.includes("thread_stalled")) && (
+            <ScheduledFollowups campaignId={id} onOpenPerson={setActivePerson} />
+          )}
+
+          {/* activity-based rules */}
+          {campaign.follow_ups_enabled && rules.length > 0 && (
+            <section className="sheet p-6">
+              <h2 className="text-[15px] font-semibold">Smart follow-ups</h2>
+              <p className="text-[12px] text-ink-500 mt-1 mb-4">
+                Checked top to bottom before the default sequence; the first rule that matches what a person did sends next.
+              </p>
+              <div className="space-y-4">
+                {rules.map((r, i) => {
+                  const st = stats?.rules?.find((x) => x.rule_id === r.id);
+                  return (
+                    <div key={r.id} className={`grid grid-cols-[70px,1fr] gap-4 ${r.enabled ? "" : "opacity-50"}`}>
+                      <div>
+                        <div className="text-[12px] font-semibold text-ink">Rule {i + 1}</div>
+                        <div className="text-[11px] text-ink-500 mt-0.5">{r.enabled ? `${r.emails.length} email${r.emails.length === 1 ? "" : "s"}` : "off"}</div>
+                      </div>
+                      <div className="border-l border-ink-200 pl-4">
+                        <div className="text-[13px] font-medium">{r.name}</div>
+                        <div className="flex flex-wrap gap-1.5 mt-1.5">
+                          {r.situations.map((k) => (
+                            <span key={k} className="rounded-full border border-ink-200 px-2 py-0.5 text-[11px] text-ink-700">
+                              {SITUATION_BY_KEY.get(k as SituationKey)?.label ?? k}
+                            </span>
+                          ))}
+                        </div>
+                        <div className="text-[11.5px] text-ink-500 mt-2">
+                          {r.emails
+                            .map((e) => `+${e.delay_value} ${e.delay_unit === "business_days" ? "business days" : e.delay_unit} after ${e.anchor === "activity" ? "the activity" : "last email"}${e.thread_mode === "new" ? " · new email" : ""}`)
+                            .join("  →  ")}
+                          {r.then_action === "next_rule" ? "  →  then the next rule" : ""}
+                        </div>
+                        {st && st.people > 0 && (
+                          <div className="text-[12px] text-ink-700 mt-2">
+                            Reached {st.people.toLocaleString()} · {st.replied.toLocaleString()} replied after ({st.reply_rate}%)
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
           {/* follow-ups */}
           {campaign.follow_ups_enabled && steps.length > 0 && (
             <section className="sheet p-6">
-              <h2 className="text-[15px] font-semibold mb-4">Follow-up sequence</h2>
+              <h2 className="text-[15px] font-semibold mb-4">{rules.length > 0 ? "Default sequence (everyone no rule matches)" : "Follow-up sequence"}</h2>
               <div className="space-y-4">
                 {steps.map((s) => (
                   <div key={s.step_number} className="grid grid-cols-[70px,1fr] gap-4">
@@ -731,7 +787,7 @@ export default function CampaignDetail({ params }: { params: Promise<{ id: strin
                   <button
                     key={r.id}
                     type="button"
-                    onClick={() => act && setActiveRecipient(act)}
+                    onClick={() => setActivePerson({ id: r.id, name: r.name, email: r.email, company: r.company })}
                     className="w-full text-left border-b border-ink-100 last:border-b-0 hover:bg-hover transition-colors cursor-pointer"
                   >
                     {/* mobile */}
@@ -839,7 +895,7 @@ export default function CampaignDetail({ params }: { params: Promise<{ id: strin
         </aside>
       </div>
 
-      <ActivityDrawer recipient={activeRecipient} onClose={() => setActiveRecipient(null)} />
+      <ActivityDrawer campaignId={id} person={activePerson} onClose={() => setActivePerson(null)} />
     </div>
     </AppShell>
   );

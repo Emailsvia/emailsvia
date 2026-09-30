@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getUser } from "@/lib/auth-server";
 import { supabaseAdmin } from "@/lib/supabase";
+import { randomBytes } from "crypto";
 import { loadUserSettings } from "@/lib/user-settings";
 
 export const runtime = "nodejs";
@@ -37,6 +38,10 @@ export async function PATCH(req: NextRequest) {
   if (typeof (body as { tracking_enabled_default?: unknown })?.tracking_enabled_default === "boolean") {
     patch.tracking_enabled_default = (body as { tracking_enabled_default: boolean }).tracking_enabled_default;
   }
+  // Meeting-booking webhook URL: create / replace (old URL stops working) / turn off.
+  const mt = (body as { meetings_token?: unknown })?.meetings_token;
+  if (mt === "regenerate") patch.meetings_token = `mt_${randomBytes(24).toString("base64url")}`;
+  if (mt === null) patch.meetings_token = null;
   if (typeof (body as { poll_replies?: unknown })?.poll_replies === "boolean") {
     patch.poll_replies = (body as { poll_replies: boolean }).poll_replies;
   }

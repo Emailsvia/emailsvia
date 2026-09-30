@@ -28,7 +28,11 @@ export type WebhookEvent =
   | "email.sent"
   | "email.bounced"
   | "sequence.stopped"
-  | "campaign.paused";
+  | "campaign.paused"
+  | "email.opened"
+  | "email.clicked"
+  | "followup.needs_approval"
+  | "meeting.booked";
 
 const ALL_EVENTS: WebhookEvent[] = [
   "reply.received",
@@ -39,6 +43,10 @@ const ALL_EVENTS: WebhookEvent[] = [
   "email.bounced",
   "sequence.stopped",
   "campaign.paused",
+  "email.opened",
+  "email.clicked",
+  "followup.needs_approval",
+  "meeting.booked",
 ];
 
 export function isWebhookEvent(s: unknown): s is WebhookEvent {

@@ -1,13 +1,16 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ReplyIntent } from "./triage";
-import { OOO_PAUSE_DAYS } from "./followup-guard";
+import { oooResumeAt } from "./followup-guard";
 import { suppressEmail, maybePauseForBounces } from "./sequence-stop";
 import { sendInterestedReplyNotice } from "./transactional";
 import { dispatch as fireWebhook } from "./webhooks";
 import { appUrl } from "./tokens";
 import { classifyDsn } from "./errors";
 import { syncReplyToIntegrations } from "./integrations";
+import { recordEvent, recordEvents } from "./activity";
+import { emitBounced } from "./events";
+import { scheduleNotNow, cancelPending } from "./nurture";
 
 // What EmailsVia does automatically once a reply has a label (from AI
 // triage or a manual relabel). Every action is idempotent: triage re-runs,
@@ -37,6 +40,7 @@ export async function applyIntentActions(
     .from("replies")
     .select(`
       id, user_id, from_email, subject, snippet, body_text, received_at, notified_at, campaign_id, is_auto_reply,
+      intent_confidence,
       recipient:recipients(id, email, name, company, status, stop_reason, next_step_number, campaign_id),
       campaign:campaigns(id, name)
     `)
@@ -50,6 +54,23 @@ export async function applyIntentActions(
   const campaign = (Array.isArray(reply.campaign) ? reply.campaign[0] : reply.campaign) as
     | { id: string; name: string }
     | null;
+
+  if (recipient) {
+    await recordEvent(admin, {
+      user_id: reply.user_id,
+      campaign_id: recipient.campaign_id,
+      recipient_id: recipient.id,
+      type: "intent_labeled",
+      data: {
+        reply_id: reply.id,
+        intent,
+        source,
+        confidence: source === "ai" ? reply.intent_confidence : null,
+      },
+      // AI labels a reply once; manual relabels can repeat, keep each one.
+      dedupe_key: source === "ai" ? `intent:${reply.id}:ai` : null,
+    });
+  }
 
   if (intent === "unsubscribe" && recipient) {
     const { data: existing } = await admin
@@ -75,12 +96,33 @@ export async function applyIntentActions(
     }
     // Stop any other campaign still scheduled to mail them. The replied row
     // itself keeps status 'replied' so reply stats stay truthful.
-    await admin
+    const { data: stopped } = await admin
       .from("recipients")
       .update({ status: "unsubscribed", next_follow_up_at: null })
       .eq("user_id", reply.user_id)
       .eq("email", recipient.email)
-      .in("status", ["pending", "sent"]);
+      .in("status", ["pending", "sent"])
+      .select("id, campaign_id, stop_reason");
+    const unstopped = (stopped ?? []).filter((r) => !r.stop_reason).map((r) => r.id);
+    if (unstopped.length > 0) {
+      await admin.from("recipients").update({ stop_reason: "unsubscribed" }).in("id", unstopped);
+    }
+    // The replying row keeps status 'replied', but it's unsubscribed too.
+    const rows = [
+      { id: recipient.id, campaign_id: recipient.campaign_id },
+      ...(stopped ?? []).filter((r) => r.id !== recipient.id),
+    ];
+    await recordEvents(
+      admin,
+      rows.map((r) => ({
+        user_id: reply.user_id,
+        campaign_id: r.campaign_id,
+        recipient_id: r.id,
+        type: "unsubscribed" as const,
+        data: { method: "reply", reply_id: reply.id, source },
+        dedupe_key: "unsubscribed",
+      }))
+    );
   }
 
   // An AI "bounce" label on a delay or a DMARC rejection must not suppress a
@@ -94,8 +136,40 @@ export async function applyIntentActions(
       .eq("id", recipient.id)
       .in("status", ["sent", "replied"]);
     await suppressEmail(admin, reply.user_id, recipient.email, "bounced", recipient.campaign_id);
+    await emitBounced(
+      admin,
+      { id: recipient.id, email: recipient.email, campaign_id: recipient.campaign_id, user_id: reply.user_id },
+      [reply.subject, reply.snippet].filter(Boolean).join(" · ") || null,
+      { source: "reply_label" }
+    );
     await maybePauseForBounces(admin, recipient.campaign_id);
     done.push("bounced");
+  }
+
+  // They've left: the address is dead weight (and may start bouncing). Stop
+  // every campaign mailing it; the reply stays visible (and any replacement
+  // it names can be added as a lead from the inbox).
+  if (intent === "left_company" && recipient) {
+    await suppressEmail(admin, reply.user_id, recipient.email, "manual", recipient.campaign_id);
+    const { data: stopped } = await admin
+      .from("recipients")
+      .update({ next_follow_up_at: null, stop_reason: "suppressed" })
+      .eq("user_id", reply.user_id)
+      .eq("email", recipient.email)
+      .eq("status", "sent")
+      .not("next_follow_up_at", "is", null)
+      .select("id, campaign_id");
+    await recordEvents(
+      admin,
+      (stopped ?? []).map((r) => ({
+        user_id: reply.user_id,
+        campaign_id: r.campaign_id,
+        recipient_id: r.id,
+        type: "sequence_stopped" as const,
+        data: { reason: "suppressed", why: "left the company", reply_id: reply.id },
+      }))
+    );
+    done.push("left_company_suppressed");
   }
 
   if (intent === "ooo" && recipient) {
@@ -109,10 +183,15 @@ export async function applyIntentActions(
       .eq("is_auto_reply", false)
       .neq("id", reply.id);
     if (recipient.status === "replied" && recipient.next_step_number != null && (humanReplies ?? 0) === 0) {
-      const base = reply.received_at ? new Date(reply.received_at) : new Date();
-      const resumeAt = new Date(
-        Math.max(base.getTime() + OOO_PAUSE_DAYS * 86_400_000, Date.now() + 3_600_000)
+      const parsed = oooResumeAt(
+        {
+          subject: reply.subject ?? null,
+          body_text: reply.body_text ?? reply.snippet ?? null,
+          date: reply.received_at ? new Date(reply.received_at) : null,
+        },
+        new Date()
       );
+      const resumeAt = new Date(Math.max(parsed.getTime(), Date.now() + 3_600_000));
       // Only undo a stop that was caused by this kind of reply; a stop for any
       // other reason (unsubscribe, bounce, colleague replied) stays.
       const { data: resumed } = await admin
@@ -122,7 +201,45 @@ export async function applyIntentActions(
         .eq("status", "replied")
         .or("stop_reason.is.null,stop_reason.eq.replied")
         .select("id");
-      if (resumed?.length) done.push("sequence_resumed_after_ooo");
+      if (resumed?.length) {
+        done.push("sequence_resumed_after_ooo");
+        await recordEvents(admin, [
+          {
+            user_id: reply.user_id,
+            campaign_id: recipient.campaign_id,
+            recipient_id: recipient.id,
+            type: "sequence_resumed",
+            data: { reason: "reply_was_out_of_office", reply_id: reply.id, source },
+          },
+          {
+            user_id: reply.user_id,
+            campaign_id: recipient.campaign_id,
+            recipient_id: recipient.id,
+            type: "sequence_paused",
+            data: { reason: "out_of_office", until: resumeAt.toISOString(), step: recipient.next_step_number },
+            dedupe_key: `paused:ooo:${resumeAt.toISOString().slice(0, 10)}`,
+          },
+        ]);
+      }
+    }
+  }
+
+  // "Not now": re-engage later if the campaign has a rule for it. A label
+  // changed away from not_now drops the re-engagement it scheduled.
+  if (recipient) {
+    if (intent === "not_now" && recipient.status === "replied" && reply.campaign_id) {
+      const scheduled = await scheduleNotNow(admin, {
+        id: reply.id,
+        user_id: reply.user_id,
+        recipient_id: recipient.id,
+        campaign_id: reply.campaign_id,
+        body_text: reply.body_text ?? null,
+        snippet: reply.snippet ?? null,
+        received_at: reply.received_at ?? null,
+      });
+      if (scheduled) done.push("not_now_follow_up_scheduled");
+    } else if (intent !== "not_now") {
+      await cancelPending(admin, recipient.id, { kinds: ["not_now"], anchorReplyId: reply.id, reason: "relabelled" });
     }
   }
 

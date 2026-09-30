@@ -22,13 +22,17 @@ const ALL_EVENTS = [
   { id: "recipient.unsubscribed", label: "Recipient unsubscribed" },
   { id: "email.sent",             label: "Email sent (first email or follow-up)" },
   { id: "email.bounced",          label: "Email bounced" },
+  { id: "email.opened",           label: "Email opened (first human open of each email)" },
+  { id: "email.clicked",          label: "Link clicked (human clicks only)" },
+  { id: "followup.needs_approval", label: "Follow-up waiting for your approval" },
+  { id: "meeting.booked",         label: "Meeting booked (Calendly / Cal.com)" },
   { id: "sequence.stopped",       label: "Sequence stopped (replied, bounced, colleague replied…)" },
   { id: "campaign.paused",        label: "Campaign auto-paused" },
   { id: "campaign.finished",      label: "Campaign finished" },
 ];
 
 // High-volume events are opt-in so a CRM hook doesn't get one call per send.
-const DEFAULT_EVENTS = ["reply.received", "reply.classified", "recipient.unsubscribed", "sequence.stopped", "campaign.paused", "campaign.finished"];
+const DEFAULT_EVENTS = ["reply.received", "reply.classified", "recipient.unsubscribed", "sequence.stopped", "campaign.paused", "campaign.finished", "followup.needs_approval", "meeting.booked"];
 
 type Delivery = {
   id: string;

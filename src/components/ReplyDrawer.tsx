@@ -11,6 +11,8 @@ export type ReplyIntent =
   | "unsubscribe"
   | "ooo"
   | "bounce"
+  | "wrong_person"
+  | "left_company"
   | "other";
 
 export type ReplyItem = {
@@ -49,7 +51,7 @@ function sanitizeHtml(html: string): string {
 
 type SentMessage = { id: string; subject: string; body: string; sent_at: string };
 
-const LABEL_OPTIONS: ReplyIntent[] = ["interested", "question", "not_now", "unsubscribe", "ooo", "bounce", "other"];
+const LABEL_OPTIONS: ReplyIntent[] = ["interested", "question", "not_now", "unsubscribe", "wrong_person", "left_company", "ooo", "bounce", "other"];
 
 const ACTION_NOTE: Record<string, string> = {
   unsubscribed: "Unsubscribed from all your campaigns.",

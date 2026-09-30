@@ -4,6 +4,7 @@ import { listRecipientInboundSince, type RefreshResult } from "./gmail";
 import { fetchRecipientInbound, type IncomingMessage } from "./replies";
 import type { SenderCreds } from "./mail";
 import { classifyDsn } from "./errors";
+import { oooResumeDate } from "./reply-dates";
 
 // Pre-send guard for follow-ups. /api/check-replies polls every 5 min and is
 // opt-in per user, so on its own it can't guarantee we never follow up on
@@ -11,8 +12,14 @@ import { classifyDsn } from "./errors";
 // sender's mailbox directly: "has this recipient written back (or bounced)
 // since the first email?"
 
-// An out-of-office pauses the sequence this long after the auto-reply date.
+// An out-of-office pauses the sequence until the day after the return date it
+// gives, or this long after the auto-reply when it gives none.
 export const OOO_PAUSE_DAYS = 7;
+
+export function oooResumeAt(m: { subject: string | null; body_text: string | null; date: Date | null }, now: Date): Date {
+  const at = m.date ?? now;
+  return oooResumeDate(m.subject, m.body_text, at) ?? new Date(at.getTime() + OOO_PAUSE_DAYS * 86_400_000);
+}
 
 export type GuardVerdict =
   | { kind: "clear" }
@@ -26,6 +33,11 @@ export async function checkBeforeFollowUp(args: {
   recipientEmail: string;
   since: Date;
   now: Date;
+  // Message-IDs already stored as auto-replies (header-detected, or labelled
+  // "ooo" by AI triage / by hand). Without this, a header-less out-of-office
+  // relabelled as ooo would look like a human reply here and stop the
+  // sequence that the relabel just resumed.
+  knownAutoReplyIds?: Set<string>;
 }): Promise<{ verdict: GuardVerdict; tokensRefreshed: RefreshResult | null }> {
   const email = args.recipientEmail.toLowerCase();
   // Emailing your own address (a test campaign): our own sent copies look
@@ -73,8 +85,9 @@ export async function checkBeforeFollowUp(args: {
     // Some auto-responders set Auto-Submitted: auto-generated, which
     // detectBounce also flags — from the recipient's own address that's an
     // auto-reply, not a bounce.
-    if (m.is_auto_reply || m.is_bounce) {
-      const resumeAt = new Date((m.date ?? args.now).getTime() + OOO_PAUSE_DAYS * 86_400_000);
+    const knownAuto = !!m.message_id && !!args.knownAutoReplyIds?.has(m.message_id);
+    if (m.is_auto_reply || m.is_bounce || knownAuto) {
+      const resumeAt = oooResumeAt(m, args.now);
       if (resumeAt > args.now && (!latestOoo || resumeAt > latestOoo.resumeAt)) {
         latestOoo = { message: m, resumeAt };
       }
@@ -86,35 +99,65 @@ export async function checkBeforeFollowUp(args: {
   return { verdict: { kind: "clear" }, tokensRefreshed };
 }
 
-// Store an inbound message found by the guard in `replies`, keyed the same
-// way /api/check-replies upserts, so a later poll doesn't duplicate it (and
-// will pick it up for AI triage if the row has no intent yet).
-export async function saveGuardReply(
+// Store an inbound message (from the guard or the reply poller) in
+// `replies`, once. A message already stored is returned untouched: the poller
+// re-reads a 7-day window every run, and rewriting the row would undo an AI
+// or manual "ooo" relabel (is_auto_reply) and re-mark the person as replied.
+// Matched by Message-ID first, then by received time (the unique key).
+export type SavedReply = { id: string; intent: string | null; is_auto_reply: boolean; created: boolean };
+
+export async function saveInboundReply(
   db: SupabaseClient,
   r: { recipient_id: string; campaign_id: string; user_id: string },
   m: IncomingMessage,
   isAutoReply: boolean,
   now: Date
-): Promise<string | null> {
-  const { data } = await db
+): Promise<SavedReply | null> {
+  const receivedAt = (m.date ?? now).toISOString();
+  const find = async () => {
+    if (m.message_id) {
+      const { data } = await db
+        .from("replies")
+        .select("id, intent, is_auto_reply")
+        .eq("recipient_id", r.recipient_id)
+        .eq("message_id", m.message_id)
+        .limit(1)
+        .maybeSingle();
+      if (data) return data;
+    }
+    if (!m.date) return null;
+    const { data } = await db
+      .from("replies")
+      .select("id, intent, is_auto_reply")
+      .eq("recipient_id", r.recipient_id)
+      .eq("received_at", receivedAt)
+      .limit(1)
+      .maybeSingle();
+    return data;
+  };
+
+  const existing = await find();
+  if (existing) return { ...existing, created: false };
+
+  const { data: inserted } = await db
     .from("replies")
-    .upsert(
-      {
-        recipient_id: r.recipient_id,
-        campaign_id: r.campaign_id,
-        user_id: r.user_id,
-        from_email: m.from,
-        subject: m.subject,
-        snippet: m.snippet,
-        body_text: m.body_text,
-        body_html: m.body_html,
-        received_at: (m.date ?? now).toISOString(),
-        is_auto_reply: isAutoReply,
-        message_id: m.message_id,
-      },
-      { onConflict: "recipient_id,received_at" }
-    )
-    .select("id")
+    .insert({
+      recipient_id: r.recipient_id,
+      campaign_id: r.campaign_id,
+      user_id: r.user_id,
+      from_email: m.from,
+      subject: m.subject,
+      snippet: m.snippet,
+      body_text: m.body_text,
+      body_html: m.body_html,
+      received_at: receivedAt,
+      is_auto_reply: isAutoReply,
+      message_id: m.message_id,
+    })
+    .select("id, intent, is_auto_reply")
     .maybeSingle();
-  return data?.id ?? null;
+  if (inserted) return { ...inserted, created: true };
+  // Lost a race with the other path (unique recipient_id, received_at).
+  const raced = await find();
+  return raced ? { ...raced, created: false } : null;
 }

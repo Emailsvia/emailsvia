@@ -25,6 +25,8 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     clicks,
     uniqueOpeners,
     uniqueClickers,
+    machineOpens,
+    meetingRows,
   ] = await Promise.all([
     db.from("recipients").select("*", { count: "exact", head: true }).eq("campaign_id", id),
     db.from("recipients").select("*", { count: "exact", head: true }).eq("campaign_id", id).in("status", ["sent", "replied"]),
@@ -34,14 +36,18 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     db.from("recipients").select("*", { count: "exact", head: true }).eq("campaign_id", id).eq("status", "unsubscribed"),
     db.from("send_log").select("*", { count: "exact", head: true }).eq("campaign_id", id).eq("kind", "follow_up").is("error_class", null),
     db.from("send_log").select("*", { count: "exact", head: true }).eq("campaign_id", id).eq("kind", "retry").is("error_class", null),
-    db.from("tracking_events").select("*", { count: "exact", head: true }).eq("campaign_id", id).eq("kind", "open"),
-    db.from("tracking_events").select("*", { count: "exact", head: true }).eq("campaign_id", id).eq("kind", "click"),
+    // Human engagement only: Apple Mail privacy fetches, prefetches and link
+    // scanners are flagged is_machine at capture (src/lib/bot-detect.ts).
+    db.from("tracking_events").select("*", { count: "exact", head: true }).eq("campaign_id", id).eq("kind", "open").eq("is_machine", false),
+    db.from("tracking_events").select("*", { count: "exact", head: true }).eq("campaign_id", id).eq("kind", "click").eq("is_machine", false),
     // Unique-opener / unique-clicker dedupe is bucketed client-side from
     // recipient_id rows. Capped at 20K — beyond that, a Postgres
     // `count(distinct recipient_id)` RPC would be the right answer; the
     // cap is well above any realistic per-campaign open count.
-    db.from("tracking_events").select("recipient_id").eq("campaign_id", id).eq("kind", "open").range(0, 19_999),
-    db.from("tracking_events").select("recipient_id").eq("campaign_id", id).eq("kind", "click").range(0, 19_999),
+    db.from("tracking_events").select("recipient_id").eq("campaign_id", id).eq("kind", "open").eq("is_machine", false).range(0, 19_999),
+    db.from("tracking_events").select("recipient_id").eq("campaign_id", id).eq("kind", "click").eq("is_machine", false).range(0, 19_999),
+    db.from("tracking_events").select("*", { count: "exact", head: true }).eq("campaign_id", id).eq("kind", "open").eq("is_machine", true),
+    db.from("recipient_events").select("recipient_id").eq("campaign_id", id).eq("type", "meeting_booked").range(0, 19_999),
   ]);
 
   const uniqOpen = new Set((uniqueOpeners.data ?? []).map((r: { recipient_id: string }) => r.recipient_id)).size;
@@ -56,8 +62,8 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   // `extract(hour from created_at) group by` RPC would scale better but
   // 20K is well over a typical campaign's open count.
   const [openRowsRes, clickRowsRes] = await Promise.all([
-    db.from("tracking_events").select("created_at").eq("campaign_id", id).eq("kind", "open").range(0, 19_999),
-    db.from("tracking_events").select("created_at").eq("campaign_id", id).eq("kind", "click").range(0, 19_999),
+    db.from("tracking_events").select("created_at").eq("campaign_id", id).eq("kind", "open").eq("is_machine", false).range(0, 19_999),
+    db.from("tracking_events").select("created_at").eq("campaign_id", id).eq("kind", "click").eq("is_machine", false).range(0, 19_999),
   ]);
   const openRows = openRowsRes.data ?? [];
   const clickRows = clickRowsRes.data ?? [];
@@ -108,13 +114,13 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   const [{ data: logRows }, { data: recRows }] = await Promise.all([
     db
       .from("send_log")
-      .select("kind, step_number, sender_id")
+      .select("kind, step_number, sender_id, rule_id, recipient_id, sent_at")
       .eq("campaign_id", id)
       .is("error_class", null)
       .range(0, 199_999),
     db
       .from("recipients")
-      .select("status, follow_up_count, sender_id")
+      .select("id, status, follow_up_count, sender_id, replied_at")
       .eq("campaign_id", id)
       .in("status", ["sent", "replied", "bounced", "unsubscribed"])
       .range(0, 99_999),
@@ -123,7 +129,8 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   const senderSent = new Map<string, number>();
   for (const l of logRows ?? []) {
     const step = l.kind === "follow_up" ? (l.step_number ?? 0) : 0;
-    if (l.kind === "retry" || l.kind === "initial" || l.kind === "follow_up") {
+    // Rule emails are reported per rule below, not as default steps.
+    if (!l.rule_id && (l.kind === "retry" || l.kind === "initial" || l.kind === "follow_up")) {
       stepSent.set(step, (stepSent.get(step) ?? 0) + 1);
     }
     if (l.sender_id) senderSent.set(l.sender_id, (senderSent.get(l.sender_id) ?? 0) + 1);
@@ -153,6 +160,46 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     share_of_replies: rate(stepReplies.get(n) ?? 0, totalReplies),
   }));
 
+  // ---- Activity-based rules: people reached, and who replied after ----
+  // A reply counts for a rule if it came after that person's first email
+  // from the rule.
+  const ruleFirstSend = new Map<string, Map<string, number>>(); // rule → recipient → first send
+  const ruleSent = new Map<string, number>();
+  for (const l of logRows ?? []) {
+    if (!l.rule_id) continue;
+    ruleSent.set(l.rule_id, (ruleSent.get(l.rule_id) ?? 0) + 1);
+    const m = ruleFirstSend.get(l.rule_id) ?? new Map<string, number>();
+    const t = new Date(l.sent_at).getTime();
+    if (!m.has(l.recipient_id) || t < m.get(l.recipient_id)!) m.set(l.recipient_id, t);
+    ruleFirstSend.set(l.rule_id, m);
+  }
+  const repliedAt = new Map<string, number>();
+  for (const r of recRows ?? []) {
+    if (r.status === "replied" && r.replied_at) repliedAt.set(r.id, new Date(r.replied_at).getTime());
+  }
+  const { data: ruleRows } = await db
+    .from("follow_up_rules")
+    .select("id, name, position")
+    .eq("campaign_id", id)
+    .order("position", { ascending: true });
+  const ruleIds = new Set([...(ruleRows ?? []).map((r) => r.id as string), ...ruleSent.keys()]);
+  const rules = Array.from(ruleIds).map((rid) => {
+    const reached = ruleFirstSend.get(rid) ?? new Map<string, number>();
+    let replied = 0;
+    for (const [recipientId, first] of reached) {
+      const at = repliedAt.get(recipientId);
+      if (at !== undefined && at > first) replied++;
+    }
+    return {
+      rule_id: rid,
+      name: (ruleRows ?? []).find((r) => r.id === rid)?.name ?? "Deleted rule",
+      sent: ruleSent.get(rid) ?? 0,
+      people: reached.size,
+      replied,
+      reply_rate: rate(replied, reached.size),
+    };
+  });
+
   // ---- Inbox health (rotation / sticky sender) ----
   const senderIds = Array.from(new Set([...senderSent.keys(), ...senderAgg.keys()]));
   const { data: senderRows } = senderIds.length
@@ -174,6 +221,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
 
   return NextResponse.json({
     steps,
+    rules,
     senders,
     total: total.count ?? 0,
     sent: sentCount,
@@ -184,6 +232,8 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     follow_ups_sent: followUpsSent.count ?? 0,
     retries_sent: retriesSent.count ?? 0,
     opens: opens.count ?? 0,
+    machine_opens: machineOpens.count ?? 0,
+    meetings_booked: new Set((meetingRows.data ?? []).map((m: { recipient_id: string }) => m.recipient_id)).size,
     unique_opens: uniqOpen,
     clicks: clicks.count ?? 0,
     unique_clicks: uniqClick,

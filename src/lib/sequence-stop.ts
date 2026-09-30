@@ -2,6 +2,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { emailDomain, isCompanyDomain } from "./sequence-schedule";
 import { emitCampaignPaused } from "./events";
+import { recordEvents } from "./activity";
 
 // Company-level stop: someone at acme.com replied, so nobody else at
 // acme.com in this campaign should get another email from it. Contacted
@@ -25,7 +26,7 @@ export async function stopDomainAfterReply(
       .neq("id", replied.id)
       .ilike("email", pattern)
       .not("next_follow_up_at", "is", null)
-      .select("id"),
+      .select("id, user_id, follow_up_count"),
     db
       .from("recipients")
       .update({ status: "skipped", stop_reason: "domain_replied", next_retry_at: null })
@@ -33,7 +34,26 @@ export async function stopDomainAfterReply(
       .eq("status", "pending")
       .neq("id", replied.id)
       .ilike("email", pattern)
-      .select("id"),
+      .select("id, user_id"),
+  ]);
+  const detail = { reason: "domain_replied", colleague: replied.email, colleague_recipient_id: replied.id };
+  await recordEvents(db, [
+    ...(sent ?? []).map((r) => ({
+      user_id: r.user_id,
+      campaign_id: campaignId,
+      recipient_id: r.id,
+      type: "sequence_stopped" as const,
+      data: detail,
+      dedupe_key: `stopped:domain_replied:${r.follow_up_count ?? 0}`,
+    })),
+    ...(pending ?? []).map((r) => ({
+      user_id: r.user_id,
+      campaign_id: campaignId,
+      recipient_id: r.id,
+      type: "skipped" as const,
+      data: detail,
+      dedupe_key: "skipped:domain_replied",
+    })),
   ]);
   return (sent?.length ?? 0) + (pending?.length ?? 0);
 }

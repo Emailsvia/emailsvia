@@ -1,4 +1,4 @@
-import nodemailer from "nodemailer";
+import nodemailer, { type Transporter } from "nodemailer";
 import { sendViaGmailApi, type GmailOAuthCreds, type RefreshResult } from "./gmail";
 import { verifyImap } from "./replies";
 
@@ -68,7 +68,7 @@ export type SenderCreds = AppPasswordSender | OAuthSender;
 //  campaign MUST have a sender_id, and callers MUST resolve a SenderCreds
 //  object before calling sendMail().)
 
-const cache = new Map<string, nodemailer.Transporter>();
+const cache = new Map<string, Transporter>();
 
 function makeTransporter(creds: AppPasswordSender) {
   const smtp = creds.smtp ?? GMAIL_SMTP;
